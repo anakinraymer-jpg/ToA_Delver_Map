@@ -1,43 +1,33 @@
 from __future__ import annotations
 
-from enum import Enum, auto
 from typing import Optional
 
 from PyQt6.QtCore import Qt, QPointF, QRectF, pyqtSignal
-from PyQt6.QtGui import QBrush, QColor, QFont, QPainter, QPen, QPixmap
+from PyQt6.QtGui import QBrush, QColor, QFont, QPen, QPixmap, QPolygonF
 from PyQt6.QtWidgets import QGraphicsScene, QGraphicsView
 
 from entities import Entity, EntityManager
-from node_map import MapNode, NodeMap
-
-
-class CanvasMode(Enum):
-    EDIT = auto()
-    PLAY = auto()
+from hex_grid import HexGrid
 
 
 class HexMapCanvas(QGraphicsView):
-    entity_selected = pyqtSignal(object)      # Entity | None
+    entity_selected = pyqtSignal(object)   # Entity | None
     move_requested = pyqtSignal(object, int)  # entity, target_node
-    node_count_changed = pyqtSignal(int)
 
-    def __init__(self, node_map: NodeMap, em: EntityManager):
+    def __init__(self, grid: HexGrid, em: EntityManager):
         super().__init__()
-        self.node_map = node_map
+        self.grid = grid
         self.em = em
-        self.mode = CanvasMode.PLAY
         self.teleport_enabled = False
-        self.show_connections = True
         self._selected_entity: Optional[Entity] = None
         self._valid_targets: set[int] = set()
         self._bg_pixmap: Optional[QPixmap] = None
         self._pan_start = None
-        self.grid_opacity: int = 200
-        self._dragging_node: Optional[MapNode] = None
+        self.grid_opacity: int = 180  # 0–255
 
         self._scene = QGraphicsScene(self)
         self.setScene(self._scene)
-        self.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self.setRenderHint(self.renderHints().__class__.Antialiasing)
         self.setDragMode(QGraphicsView.DragMode.NoDrag)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
@@ -55,28 +45,17 @@ class HexMapCanvas(QGraphicsView):
     def refresh(self):
         self._scene.clear()
         self._draw_background()
-        self._draw_connections()
-        self._draw_nodes()
+        self._draw_grid()
         self._draw_entities()
-
-    def set_mode(self, mode: CanvasMode):
-        self.mode = mode
-        if mode == CanvasMode.EDIT:
-            self._selected_entity = None
-            self._valid_targets = set()
-            self.setCursor(Qt.CursorShape.CrossCursor)
-        else:
-            self.setCursor(Qt.CursorShape.ArrowCursor)
-        self.refresh()
 
     def set_selected(self, entity: Optional[Entity]):
         self._selected_entity = entity
         if entity is None:
             self._valid_targets = set()
         elif self.teleport_enabled:
-            self._valid_targets = {n.number for n in self.node_map.all_nodes} - {entity.node}
+            self._valid_targets = {c.number for c in self.grid.all_cells} - {entity.node}
         else:
-            self._valid_targets = set(self.node_map.neighbors(entity.node))
+            self._valid_targets = set(self.grid.neighbor_numbers(entity.node))
         self.refresh()
         self.entity_selected.emit(entity)
 
@@ -89,109 +68,83 @@ class HexMapCanvas(QGraphicsView):
         self.grid_opacity = max(0, min(255, value))
         self.refresh()
 
-    def set_show_connections(self, show: bool):
-        self.show_connections = show
-        self.refresh()
-
     # ------------------------------------------------------------------
     # Drawing
     # ------------------------------------------------------------------
 
     def _draw_background(self):
         if self._bg_pixmap:
-            item = self._scene.addPixmap(self._bg_pixmap)
-            item.setZValue(0)
-            self._scene.setSceneRect(item.boundingRect())
+            self._scene.addPixmap(self._bg_pixmap).setZValue(0)
 
-    def _draw_connections(self):
-        if not self.show_connections or not self.node_map.all_nodes:
-            return
+    def _draw_grid(self):
         op = self.grid_opacity
-        pen = QPen(QColor(120, 160, 255, max(0, op // 2)), 1.5)
-        drawn: set[tuple[int, int]] = set()
-        for node in self.node_map.all_nodes:
-            for nb_num in self.node_map.neighbors(node.number):
-                key = (min(node.number, nb_num), max(node.number, nb_num))
-                if key in drawn:
-                    continue
-                drawn.add(key)
-                nb = self.node_map.get_node(nb_num)
-                if nb:
-                    line = self._scene.addLine(node.x, node.y, nb.x, nb.y, pen)
-                    line.setZValue(1)
+        pen_normal = QPen(QColor(80, 80, 80, op), 1)
+        pen_target = QPen(QColor(80, 200, 80, min(255, op + 60)), 2)
+        pen_sel_node = QPen(QColor(255, 200, 0, min(255, op + 60)), 3)
+        brush_clear = QBrush(Qt.BrushStyle.NoBrush)
+        brush_target = QBrush(QColor(80, 200, 80, min(255, op // 3)))
+        brush_sel_node = QBrush(QColor(255, 200, 0, min(255, op // 3)))
 
-    def _draw_nodes(self):
-        op = self.grid_opacity
+        text_alpha = max(0, min(255, int(op * 1.2)))
+
         font = QFont()
-        font.setPointSize(8)
-        font.setBold(True)
-        r = 16.0
+        font.setPointSize(max(6, int(self.grid.size * 0.28)))
 
         selected_node = self._selected_entity.node if self._selected_entity else None
 
-        for node in self.node_map.all_nodes:
-            is_target = node.number in self._valid_targets
-            is_sel = node.number == selected_node
+        for cell in self.grid.all_cells:
+            corners = self.grid.corners(cell.q, cell.r)
+            poly = QPolygonF([QPointF(x, y) for x, y in corners])
+            cx, cy = self.grid.hex_to_pixel(cell.q, cell.r)
 
-            if self.mode == CanvasMode.EDIT:
-                pen = QPen(QColor(255, 160, 30, op), 1.5)
-                brush = QBrush(QColor(80, 40, 0, max(0, op // 3)))
-            elif is_sel:
-                pen = QPen(QColor(255, 210, 0, 255), 2.5)
-                brush = QBrush(QColor(255, 210, 0, 70))
+            is_sel = cell.number == selected_node
+            is_target = cell.number in self._valid_targets
+
+            if is_sel:
+                pen, brush = pen_sel_node, brush_sel_node
             elif is_target:
-                pen = QPen(QColor(80, 220, 80, 255), 2.5)
-                brush = QBrush(QColor(80, 220, 80, 70))
+                pen, brush = pen_target, brush_target
             else:
-                pen = QPen(QColor(200, 200, 200, op), 1)
-                brush = QBrush(QColor(40, 40, 80, max(0, op // 4)))
+                pen, brush = pen_normal, brush_clear
 
-            dot = self._scene.addEllipse(
-                QRectF(node.x - r, node.y - r, 2 * r, 2 * r), pen, brush
-            )
-            dot.setZValue(2)
+            self._scene.addPolygon(poly, pen, brush).setZValue(1)
 
-            lbl = self._scene.addText(str(node.number), font)
-            lbl.setDefaultTextColor(QColor(255, 255, 255, min(255, int(op * 1.2))))
-            br = lbl.boundingRect()
-            lbl.setPos(node.x - br.width() / 2, node.y - br.height() / 2)
-            lbl.setZValue(3)
+            num_item = self._scene.addText(str(cell.number), font)
+            num_item.setDefaultTextColor(QColor(210, 210, 210, text_alpha))
+            br = num_item.boundingRect()
+            num_item.setPos(cx - br.width() / 2, cy - br.height() / 2)
+            num_item.setZValue(2)
 
     def _draw_entities(self):
         font = QFont()
-        font.setPointSize(10)
+        font.setPointSize(max(7, int(self.grid.size * 0.28)))
         font.setBold(True)
-        r = 20.0
 
         for entity in self.em.all:
-            node = self.node_map.get_node(entity.node)
-            if not node:
+            pos = self.grid.pixel_of(entity.node)
+            if pos is None:
                 continue
-            cx, cy = node.x, node.y
-            is_sel = bool(self._selected_entity and entity.id == self._selected_entity.id)
+            cx, cy = pos
+            r = self.grid.size * 0.38
+            is_sel = self._selected_entity and entity.id == self._selected_entity.id
 
-            pen = QPen(QColor("yellow") if is_sel else QColor("white"), 3 if is_sel else 2)
+            pen = QPen(QColor("yellow") if is_sel else QColor("white"), 2 if not is_sel else 3)
             circle = self._scene.addEllipse(
                 QRectF(cx - r, cy - r, 2 * r, 2 * r),
                 pen,
                 QBrush(QColor(entity.color)),
             )
-            circle.setZValue(4)
+            circle.setZValue(3)
 
             lbl = self._scene.addText(entity.label, font)
             lbl.setDefaultTextColor(QColor("white"))
             br = lbl.boundingRect()
             lbl.setPos(cx - br.width() / 2, cy - br.height() / 2)
-            lbl.setZValue(5)
+            lbl.setZValue(4)
 
     # ------------------------------------------------------------------
-    # Input
+    # Input handling
     # ------------------------------------------------------------------
-
-    def _hit_radius(self) -> float:
-        """Returns a hit-test radius in scene px that feels ~12 screen-px at any zoom."""
-        scale = self.transform().m11()
-        return max(16.0, 12.0 / scale)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.MiddleButton:
@@ -199,46 +152,30 @@ class HexMapCanvas(QGraphicsView):
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
             return
 
-        sp = self.mapToScene(event.pos())
-        x, y = sp.x(), sp.y()
-        hr = self._hit_radius()
-
-        # ---- EDIT mode ----
-        if self.mode == CanvasMode.EDIT:
-            if event.button() == Qt.MouseButton.LeftButton:
-                existing = self.node_map.nearest_to(x, y, max_dist=hr)
-                if existing:
-                    self._dragging_node = existing   # start drag
-                else:
-                    self.node_map.add_node(x, y)
-                    self.node_count_changed.emit(self.node_map.count)
-                    self.refresh()
-            elif event.button() == Qt.MouseButton.RightButton:
-                target = self.node_map.nearest_to(x, y, max_dist=hr)
-                if target:
-                    self.node_map.remove_node(target.number)
-                    self.node_count_changed.emit(self.node_map.count)
-                    self.refresh()
-            return
-
-        # ---- PLAY mode ----
         if event.button() == Qt.MouseButton.RightButton:
             self.set_selected(None)
             return
 
         if event.button() == Qt.MouseButton.LeftButton:
-            clicked = self.node_map.nearest_to(x, y, max_dist=hr)
+            sp = self.mapToScene(event.pos())
+            coord = self.grid.pixel_to_nearest(sp.x(), sp.y())
+            if coord is None:
+                return
+            cell = self.grid.cell(*coord)
+            if cell is None:
+                return
+            clicked = cell.number
+
             if self._selected_entity:
-                if clicked and clicked.number in self._valid_targets:
-                    self.move_requested.emit(self._selected_entity, clicked.number)
+                if clicked in self._valid_targets:
+                    self.move_requested.emit(self._selected_entity, clicked)
                 else:
-                    here = self.em.at_node(clicked.number) if clicked else []
+                    here = self.em.at_node(clicked)
                     self.set_selected(here[0] if here else None)
             else:
-                if clicked:
-                    here = self.em.at_node(clicked.number)
-                    if here:
-                        self.set_selected(here[0])
+                here = self.em.at_node(clicked)
+                if here:
+                    self.set_selected(here[0])
 
     def mouseMoveEvent(self, event):
         if self._pan_start is not None:
@@ -250,27 +187,12 @@ class HexMapCanvas(QGraphicsView):
             self.verticalScrollBar().setValue(
                 self.verticalScrollBar().value() - delta.y()
             )
-            return
-
-        if self.mode == CanvasMode.EDIT and self._dragging_node is not None:
-            sp = self.mapToScene(event.pos())
-            self.node_map.move_node(self._dragging_node.number, sp.x(), sp.y())
-            self.refresh()
-            return
-
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.MiddleButton:
             self._pan_start = None
-            cursor = (
-                Qt.CursorShape.CrossCursor
-                if self.mode == CanvasMode.EDIT
-                else Qt.CursorShape.ArrowCursor
-            )
-            self.setCursor(cursor)
-        if event.button() == Qt.MouseButton.LeftButton:
-            self._dragging_node = None
+            self.setCursor(Qt.CursorShape.ArrowCursor)
         super().mouseReleaseEvent(event)
 
     def wheelEvent(self, event):
