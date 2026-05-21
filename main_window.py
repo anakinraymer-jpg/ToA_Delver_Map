@@ -69,12 +69,12 @@ class MainWindow(QMainWindow):
         self.canvas.move_requested.connect(self._on_move_requested)
         self.canvas.node_count_changed.connect(self._on_node_count_changed)
 
+        self.status_bar = QStatusBar()
+        self.setStatusBar(self.status_bar)
+
         panel = self._build_panel()
         root.addWidget(self.canvas, 1)
         root.addWidget(panel)
-
-        self.status_bar = QStatusBar()
-        self.setStatusBar(self.status_bar)
 
     def _build_panel(self) -> QWidget:
         panel = QWidget()
