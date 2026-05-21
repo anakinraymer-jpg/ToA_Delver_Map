@@ -23,6 +23,7 @@ class HexMapCanvas(QGraphicsView):
         self._valid_targets: set[int] = set()
         self._bg_pixmap: Optional[QPixmap] = None
         self._pan_start = None
+        self.grid_opacity: int = 180  # 0–255
 
         self._scene = QGraphicsScene(self)
         self.setScene(self._scene)
@@ -63,6 +64,10 @@ class HexMapCanvas(QGraphicsView):
         if self._selected_entity:
             self.set_selected(self._selected_entity)
 
+    def set_grid_opacity(self, value: int):
+        self.grid_opacity = max(0, min(255, value))
+        self.refresh()
+
     # ------------------------------------------------------------------
     # Drawing
     # ------------------------------------------------------------------
@@ -72,12 +77,15 @@ class HexMapCanvas(QGraphicsView):
             self._scene.addPixmap(self._bg_pixmap).setZValue(0)
 
     def _draw_grid(self):
-        pen_normal = QPen(QColor(80, 80, 80, 160), 1)
-        pen_target = QPen(QColor(80, 200, 80), 2)
-        pen_sel_node = QPen(QColor(255, 200, 0), 3)
+        op = self.grid_opacity
+        pen_normal = QPen(QColor(80, 80, 80, op), 1)
+        pen_target = QPen(QColor(80, 200, 80, min(255, op + 60)), 2)
+        pen_sel_node = QPen(QColor(255, 200, 0, min(255, op + 60)), 3)
         brush_clear = QBrush(Qt.BrushStyle.NoBrush)
-        brush_target = QBrush(QColor(80, 200, 80, 55))
-        brush_sel_node = QBrush(QColor(255, 200, 0, 55))
+        brush_target = QBrush(QColor(80, 200, 80, min(255, op // 3)))
+        brush_sel_node = QBrush(QColor(255, 200, 0, min(255, op // 3)))
+
+        text_alpha = max(0, min(255, int(op * 1.2)))
 
         font = QFont()
         font.setPointSize(max(6, int(self.grid.size * 0.28)))
@@ -102,7 +110,7 @@ class HexMapCanvas(QGraphicsView):
             self._scene.addPolygon(poly, pen, brush).setZValue(1)
 
             num_item = self._scene.addText(str(cell.number), font)
-            num_item.setDefaultTextColor(QColor(210, 210, 210))
+            num_item.setDefaultTextColor(QColor(210, 210, 210, text_alpha))
             br = num_item.boundingRect()
             num_item.setPos(cx - br.width() / 2, cy - br.height() / 2)
             num_item.setZValue(2)

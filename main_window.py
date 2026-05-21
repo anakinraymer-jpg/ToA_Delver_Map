@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Optional
 
 from PyQt6.QtCore import Qt
@@ -16,11 +17,17 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QSlider,
     QStatusBar,
     QToolBar,
     QVBoxLayout,
     QWidget,
 )
+
+# Calculated from chult_map.png (4476 × 6000 px): size×17.5 = 1524 → size=87
+# Equal ~63 px margins all sides; 33 cols × 39 rows = 1 287 hex points
+CHULT_GRID = dict(size=87.0, origin=(150.0, 138.0), orientation="flat", cols=33, rows=39)
+CHULT_MAP_FILE = "chult_map.png"
 
 from canvas import HexMapCanvas
 from dialogs import AddEntityDialog, GridSettingsDialog
@@ -34,12 +41,13 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("RPG Hex Map Tool")
         self.resize(1280, 820)
 
-        self.grid = HexGrid(size=40.0, origin=(40.0, 40.0), orientation="flat", cols=20, rows=15)
+        self.grid = HexGrid(**CHULT_GRID)
         self.em = EntityManager()
 
         self._build_ui()
         self._build_menu()
         self._build_toolbar()
+        self._auto_load_map()
 
     # ------------------------------------------------------------------
     # UI construction
@@ -98,6 +106,17 @@ class MainWindow(QMainWindow):
         self.teleport_check = QCheckBox("Teleport Mode")
         self.teleport_check.stateChanged.connect(self._toggle_teleport)
 
+        # Grid opacity
+        opacity_group = QGroupBox("Grid Overlay")
+        og = QVBoxLayout(opacity_group)
+        self.opacity_label = QLabel("Opacity: 71%")
+        self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
+        self.opacity_slider.setRange(0, 255)
+        self.opacity_slider.setValue(180)
+        self.opacity_slider.valueChanged.connect(self._on_opacity_changed)
+        og.addWidget(self.opacity_label)
+        og.addWidget(self.opacity_slider)
+
         hint = QLabel(
             "<small>Left-click entity to select.<br>"
             "Left-click target to move.<br>"
@@ -109,6 +128,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(eg)
         layout.addWidget(ig)
         layout.addWidget(self.teleport_check)
+        layout.addWidget(opacity_group)
         layout.addWidget(hint)
         layout.addStretch()
         return panel
@@ -171,6 +191,19 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # Actions
     # ------------------------------------------------------------------
+
+    def _auto_load_map(self):
+        if os.path.isfile(CHULT_MAP_FILE):
+            self.canvas.load_image(CHULT_MAP_FILE)
+            self.status_bar.showMessage(
+                f"Chult map loaded  |  {self.grid.max_number} hex points  "
+                f"({self.grid.cols} cols × {self.grid.rows} rows, size {int(self.grid.size)} px)"
+            )
+
+    def _on_opacity_changed(self, value: int):
+        pct = round(value / 255 * 100)
+        self.opacity_label.setText(f"Opacity: {pct}%")
+        self.canvas.set_grid_opacity(value)
 
     def _open_map(self):
         path, _ = QFileDialog.getOpenFileName(
