@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPlainTextEdit,
     QPushButton,
     QSpinBox,
 )
@@ -168,4 +169,67 @@ class AddEntityDialog(QDialog):
             "node": self.node_spin.value(),
             "color": self._color,
             "is_group": self.is_group.isChecked(),
+        }
+
+
+class AddLocationDialog(QDialog):
+    """Dialog for placing a named location on a specific hex node."""
+
+    def __init__(self, max_node: int, parent=None, *, preset_node: int = 1):
+        super().__init__(parent)
+        self.setWindowTitle("Add Location")
+        self._color = "#f39c12"
+        layout = QFormLayout(self)
+
+        self.name_edit = QLineEdit()
+        self.name_edit.setPlaceholderText("e.g. Port Nyanzaru")
+
+        self.node_spin = QSpinBox()
+        self.node_spin.setRange(1, max_node)
+        self.node_spin.setValue(preset_node)
+
+        self.desc_edit = QPlainTextEdit()
+        self.desc_edit.setPlaceholderText("Optional notes about this location")
+        self.desc_edit.setFixedHeight(60)
+
+        color_row = QHBoxLayout()
+        self._preview = QLabel()
+        self._preview.setFixedSize(24, 24)
+        self._preview.setStyleSheet(f"background:{self._color};border:1px solid #888;")
+        pick_btn = QPushButton("Pick Color")
+        pick_btn.clicked.connect(self._pick_color)
+        color_row.addWidget(self._preview)
+        color_row.addWidget(pick_btn)
+        color_row.addStretch()
+
+        layout.addRow("Name:", self.name_edit)
+        layout.addRow("Hex Node:", self.node_spin)
+        layout.addRow("Description:", self.desc_edit)
+        layout.addRow("Color:", color_row)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._on_accept)
+        buttons.rejected.connect(self.reject)
+        layout.addRow(buttons)
+
+    def _pick_color(self):
+        c = QColorDialog.getColor(QColor(self._color), self)
+        if c.isValid():
+            self._color = c.name()
+            self._preview.setStyleSheet(f"background:{self._color};border:1px solid #888;")
+
+    def _on_accept(self):
+        if not self.name_edit.text().strip():
+            self.name_edit.setFocus()
+            return
+        self.accept()
+
+    def get_values(self) -> dict:
+        return {
+            "name": self.name_edit.text().strip(),
+            "node": self.node_spin.value(),
+            "color": self._color,
+            "description": self.desc_edit.toPlainText().strip(),
         }

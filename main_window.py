@@ -30,9 +30,10 @@ CHULT_GRID = dict(size=87.0, origin=(150.0, 138.0), orientation="flat", cols=33,
 CHULT_MAP_FILE = "chult_map.png"
 
 from canvas import HexMapCanvas
-from dialogs import AddEntityDialog, GridSettingsDialog
+from dialogs import AddEntityDialog, AddLocationDialog, GridSettingsDialog
 from entities import Entity, EntityManager
 from hex_grid import HexGrid
+from locations import Location, LocationManager
 
 
 class MainWindow(QMainWindow):
@@ -43,6 +44,7 @@ class MainWindow(QMainWindow):
 
         self.grid = HexGrid(**CHULT_GRID)
         self.em = EntityManager()
+        self.lm = LocationManager()
 
         self._build_ui()
         self._build_menu()
@@ -60,7 +62,7 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        self.canvas = HexMapCanvas(self.grid, self.em)
+        self.canvas = HexMapCanvas(self.grid, self.em, self.lm)
         self.canvas.entity_selected.connect(self._on_entity_selected)
         self.canvas.move_requested.connect(self._on_move_requested)
         self.canvas.origin_clicked.connect(self._on_origin_clicked)
@@ -85,6 +87,7 @@ class MainWindow(QMainWindow):
         eg = QGroupBox("Characters & Groups")
         eg_layout = QVBoxLayout(eg)
         self.entity_list = QListWidget()
+        self.entity_list.setMaximumHeight(110)
         self.entity_list.itemClicked.connect(self._on_list_click)
         eg_layout.addWidget(self.entity_list)
 
@@ -96,6 +99,26 @@ class MainWindow(QMainWindow):
         btn_row.addWidget(add_btn)
         btn_row.addWidget(rm_btn)
         eg_layout.addLayout(btn_row)
+
+        # Location list
+        lg = QGroupBox("Locations")
+        lg_layout = QVBoxLayout(lg)
+        self.location_list = QListWidget()
+        self.location_list.setMaximumHeight(110)
+        self.location_list.itemClicked.connect(self._on_location_list_click)
+        lg_layout.addWidget(self.location_list)
+
+        loc_btn_row = QHBoxLayout()
+        add_loc_btn = QPushButton("+ Add")
+        add_loc_btn.clicked.connect(self._add_location)
+        rm_loc_btn = QPushButton("Remove")
+        rm_loc_btn.clicked.connect(self._remove_location)
+        edit_loc_btn = QPushButton("Edit")
+        edit_loc_btn.clicked.connect(self._edit_location)
+        loc_btn_row.addWidget(add_loc_btn)
+        loc_btn_row.addWidget(edit_loc_btn)
+        loc_btn_row.addWidget(rm_loc_btn)
+        lg_layout.addLayout(loc_btn_row)
 
         # Info box
         ig = QGroupBox("Selected")
@@ -128,6 +151,7 @@ class MainWindow(QMainWindow):
         hint.setWordWrap(True)
 
         layout.addWidget(eg)
+        layout.addWidget(lg)
         layout.addWidget(ig)
         layout.addWidget(self.teleport_check)
         layout.addWidget(opacity_group)
@@ -309,6 +333,82 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage("Teleport mode " + ("ON" if enabled else "OFF") + ".")
 
     # ------------------------------------------------------------------
+    # Location actions
+    # ------------------------------------------------------------------
+
+    def _add_location(self):
+        dlg = AddLocationDialog(self.grid.max_number, self)
+        if dlg.exec():
+            v = dlg.get_values()
+            loc = Location(
+                name=v["name"], node=v["node"],
+                color=v["color"], description=v["description"],
+            )
+            self.lm.add(loc)
+            self._refresh_locations()
+            self.canvas.refresh()
+            self.status_bar.showMessage(f"Location '{loc.name}' placed at node {loc.node}.")
+
+    def _remove_location(self):
+        item = self.location_list.currentItem()
+        if not item:
+            return
+        lid = item.data(Qt.ItemDataRole.UserRole)
+        loc = self.lm.get(lid)
+        if loc:
+            self.lm.remove(lid)
+            self.canvas.set_highlighted_location(-1)
+            self._refresh_locations()
+            self.canvas.refresh()
+            self.status_bar.showMessage(f"Location '{loc.name}' removed.")
+
+    def _edit_location(self):
+        item = self.location_list.currentItem()
+        if not item:
+            return
+        lid = item.data(Qt.ItemDataRole.UserRole)
+        loc = self.lm.get(lid)
+        if not loc:
+            return
+        dlg = AddLocationDialog(self.grid.max_number, self, preset_node=loc.node)
+        dlg.setWindowTitle("Edit Location")
+        dlg.name_edit.setText(loc.name)
+        dlg.node_spin.setValue(loc.node)
+        dlg.desc_edit.setPlainText(loc.description)
+        dlg._color = loc.color
+        dlg._preview.setStyleSheet(f"background:{loc.color};border:1px solid #888;")
+        if dlg.exec():
+            v = dlg.get_values()
+            self.lm.update(lid, name=v["name"], node=v["node"],
+                           color=v["color"], description=v["description"])
+            self._refresh_locations()
+            self.canvas.refresh()
+            self.status_bar.showMessage(f"Location '{v['name']}' updated.")
+
+    def _refresh_locations(self):
+        self.location_list.clear()
+        for loc in self.lm.all:
+            item = QListWidgetItem(f"{loc.name}  → {loc.node}")
+            item.setData(Qt.ItemDataRole.UserRole, loc.id)
+            item.setForeground(QColor(loc.color))
+            self.location_list.addItem(item)
+
+    def _on_location_list_click(self, item: QListWidgetItem):
+        loc = self.lm.get(item.data(Qt.ItemDataRole.UserRole))
+        if not loc:
+            return
+        # Clear entity selection when focusing a location
+        self.canvas._selected_entity = None
+        self.canvas._valid_targets = set()
+        self.entity_list.clearSelection()
+        desc_line = f"\n{loc.description}" if loc.description else ""
+        self.info_label.setText(f"Location: {loc.name}\nNode: {loc.node}{desc_line}")
+        self.canvas.set_highlighted_location(loc.node)
+        pos = self.grid.pixel_of(loc.node)
+        if pos:
+            self.canvas.centerOn(pos[0], pos[1])
+
+    # ------------------------------------------------------------------
     # Save / Load
     # ------------------------------------------------------------------
 
@@ -334,6 +434,7 @@ class MainWindow(QMainWindow):
                 }
                 for e in self.em.all
             ],
+            "locations": self.lm.to_list(),
         }
         with open(path, "w") as f:
             json.dump(data, f, indent=2)
@@ -366,8 +467,23 @@ class MainWindow(QMainWindow):
                         id=ed["id"],
                     )
                 )
+            # Reload locations (mutate in-place so canvas ref stays valid)
+            for loc in list(self.lm.all):
+                self.lm.remove(loc.id)
+            for ld in data.get("locations", []):
+                self.lm.add(
+                    Location(
+                        name=ld["name"],
+                        node=ld["node"],
+                        color=ld.get("color", "#f39c12"),
+                        description=ld.get("description", ""),
+                        id=ld["id"],
+                    )
+                )
             self.canvas.set_selected(None)
+            self.canvas.set_highlighted_location(-1)
             self._refresh_list()
+            self._refresh_locations()
             self.canvas.refresh()
             self.status_bar.showMessage(f"Loaded: {path}")
         except Exception as exc:
@@ -389,6 +505,9 @@ class MainWindow(QMainWindow):
     def _on_list_click(self, item: QListWidgetItem):
         e = self.em.get(item.data(Qt.ItemDataRole.UserRole))
         if e:
+            # Clear any location highlight when switching to an entity
+            self.canvas._highlighted_location_node = -1
+            self.location_list.clearSelection()
             self.canvas.set_selected(e)
 
     def _on_entity_selected(self, entity: Optional[Entity]):

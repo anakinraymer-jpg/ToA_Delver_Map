@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import QGraphicsScene, QGraphicsView
 
 from entities import Entity, EntityManager
 from hex_grid import HexGrid
+from locations import LocationManager
 
 
 class HexMapCanvas(QGraphicsView):
@@ -15,10 +16,11 @@ class HexMapCanvas(QGraphicsView):
     move_requested = pyqtSignal(object, int)    # entity, target_node
     origin_clicked = pyqtSignal(float, float)   # x, y scene coords
 
-    def __init__(self, grid: HexGrid, em: EntityManager):
+    def __init__(self, grid: HexGrid, em: EntityManager, lm: LocationManager):
         super().__init__()
         self.grid = grid
         self.em = em
+        self.lm = lm
         self.teleport_enabled = False
         self._selected_entity: Optional[Entity] = None
         self._valid_targets: set[int] = set()
@@ -26,6 +28,7 @@ class HexMapCanvas(QGraphicsView):
         self._pan_start = None
         self.grid_opacity: int = 180  # 0–255
         self._origin_click_mode: bool = False
+        self._highlighted_location_node: int = -1  # hex to tint purple
 
         self._scene = QGraphicsScene(self)
         self.setScene(self._scene)
@@ -49,10 +52,16 @@ class HexMapCanvas(QGraphicsView):
         self.refresh()
         self.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
 
+    def set_highlighted_location(self, node: int):
+        """Highlight a hex cell to indicate the selected location (-1 = none)."""
+        self._highlighted_location_node = node
+        self.refresh()
+
     def refresh(self):
         self._scene.clear()
         self._draw_background()
         self._draw_grid()
+        self._draw_locations()
         self._draw_entities()
         self._draw_corner_handles()
 
@@ -92,12 +101,14 @@ class HexMapCanvas(QGraphicsView):
 
     def _draw_grid(self):
         op = self.grid_opacity
-        pen_normal = QPen(QColor(80, 80, 80, op), 1)
-        pen_target = QPen(QColor(80, 200, 80, min(255, op + 60)), 2)
-        pen_sel_node = QPen(QColor(255, 200, 0, min(255, op + 60)), 3)
-        brush_clear = QBrush(Qt.BrushStyle.NoBrush)
-        brush_target = QBrush(QColor(80, 200, 80, min(255, op // 3)))
-        brush_sel_node = QBrush(QColor(255, 200, 0, min(255, op // 3)))
+        pen_normal   = QPen(QColor(80,  80,  80,  op), 1)
+        pen_target   = QPen(QColor(80,  200, 80,  min(255, op + 60)), 2)
+        pen_sel_node = QPen(QColor(255, 200, 0,   min(255, op + 60)), 3)
+        pen_loc_node = QPen(QColor(180, 100, 255, min(255, op + 60)), 2)
+        brush_clear    = QBrush(Qt.BrushStyle.NoBrush)
+        brush_target   = QBrush(QColor(80,  200, 80,  min(255, op // 3)))
+        brush_sel_node = QBrush(QColor(255, 200, 0,   min(255, op // 3)))
+        brush_loc_node = QBrush(QColor(180, 100, 255, min(255, op // 4)))
 
         text_alpha = max(0, min(255, int(op * 1.2)))
 
@@ -113,11 +124,14 @@ class HexMapCanvas(QGraphicsView):
 
             is_sel = cell.number == selected_node
             is_target = cell.number in self._valid_targets
+            is_loc = cell.number == self._highlighted_location_node
 
             if is_sel:
                 pen, brush = pen_sel_node, brush_sel_node
             elif is_target:
                 pen, brush = pen_target, brush_target
+            elif is_loc:
+                pen, brush = pen_loc_node, brush_loc_node
             else:
                 pen, brush = pen_normal, brush_clear
 
@@ -148,12 +162,47 @@ class HexMapCanvas(QGraphicsView):
                 pen,
                 QBrush(QColor(entity.color)),
             )
-            circle.setZValue(3)
+            circle.setZValue(5)
 
             lbl = self._scene.addText(entity.label, font)
             lbl.setDefaultTextColor(QColor("white"))
             br = lbl.boundingRect()
             lbl.setPos(cx - br.width() / 2, cy - br.height() / 2)
+            lbl.setZValue(6)
+
+    # ------------------------------------------------------------------
+    # Location markers  (z=3 diamonds, z=4 name labels)
+    # ------------------------------------------------------------------
+
+    def _draw_locations(self):
+        name_font = QFont()
+        name_font.setPointSize(max(5, int(self.grid.size * 0.14)))
+        name_font.setBold(True)
+
+        for loc in self.lm.all:
+            pos = self.grid.pixel_of(loc.node)
+            if pos is None:
+                continue
+            cx, cy = pos
+            h = max(6.0, self.grid.size * 0.18)   # diamond half-size
+
+            # Filled diamond (map-pin style)
+            diamond = QPolygonF([
+                QPointF(cx,     cy - h),   # top
+                QPointF(cx + h, cy),       # right
+                QPointF(cx,     cy + h),   # bottom
+                QPointF(cx - h, cy),       # left
+            ])
+            pen   = QPen(QColor("white"), 1.2)
+            brush = QBrush(QColor(loc.color))
+            self._scene.addPolygon(diamond, pen, brush).setZValue(3)
+
+            # Name label below the diamond
+            lbl = self._scene.addText(loc.name, name_font)
+            lbl.setDefaultTextColor(QColor(loc.color))
+            br = lbl.boundingRect()
+            # Centre horizontally; sit just below the diamond's bottom tip
+            lbl.setPos(cx - br.width() / 2, cy + h + 2)
             lbl.setZValue(4)
 
     # ------------------------------------------------------------------
