@@ -63,6 +63,8 @@ class MainWindow(QMainWindow):
         self.canvas = HexMapCanvas(self.grid, self.em)
         self.canvas.entity_selected.connect(self._on_entity_selected)
         self.canvas.move_requested.connect(self._on_move_requested)
+        self.canvas.origin_clicked.connect(self._on_origin_clicked)
+        self._grid_dlg = None  # holds open GridSettingsDialog for live updates
 
         panel = self._build_panel()
 
@@ -166,6 +168,11 @@ class MainWindow(QMainWindow):
         grid_act.triggered.connect(self._grid_settings)
         map_menu.addAction(grid_act)
 
+        origin_act = QAction("Set Origin by Click", self)
+        origin_act.setShortcut("Ctrl+Shift+O")
+        origin_act.triggered.connect(self._start_origin_click)
+        map_menu.addAction(origin_act)
+
     def _build_toolbar(self):
         tb = QToolBar()
         tb.setMovable(False)
@@ -180,6 +187,11 @@ class MainWindow(QMainWindow):
         grid_act = QAction("Grid Settings", self)
         grid_act.triggered.connect(self._grid_settings)
         tb.addAction(grid_act)
+
+        origin_act = QAction("Set Origin", self)
+        origin_act.setToolTip("Click a hex centre on the map to snap the grid origin there")
+        origin_act.triggered.connect(self._start_origin_click)
+        tb.addAction(origin_act)
 
         tb.addSeparator()
 
@@ -218,10 +230,41 @@ class MainWindow(QMainWindow):
 
     def _grid_settings(self):
         dlg = GridSettingsDialog(self.grid, self)
+        self._grid_dlg = dlg
+        dlg.settings_changed.connect(self._on_grid_preview)
         if dlg.exec():
-            self.grid.reconfigure(**dlg.get_values())
+            # Settings already applied live — just confirm
+            self.status_bar.showMessage(
+                f"Grid updated  |  size={self.grid.size:.1f} px  "
+                f"origin=({self.grid.origin[0]:.0f}, {self.grid.origin[1]:.0f})  "
+                f"{self.grid.cols}×{self.grid.rows}"
+            )
+        else:
+            # Cancel — restore originals
+            self.grid.reconfigure(**dlg.get_original())
             self.canvas.refresh()
-            self.status_bar.showMessage("Grid updated.")
+            self.status_bar.showMessage("Grid settings cancelled — reverted.")
+        self._grid_dlg = None
+
+    def _on_grid_preview(self, values: dict):
+        self.grid.reconfigure(**values)
+        self.canvas.refresh()
+
+    def _start_origin_click(self):
+        self.canvas.set_origin_click_mode(True)
+        self.status_bar.showMessage(
+            "Click on any hex centre on the map to set the grid origin there."
+        )
+
+    def _on_origin_clicked(self, x: float, y: float):
+        self.grid.reconfigure(origin=(x, y))
+        self.canvas.refresh()
+        # Update dialog if it's open
+        if self._grid_dlg is not None:
+            self._grid_dlg.set_origin(x, y)
+        self.status_bar.showMessage(
+            f"Origin set to ({x:.0f}, {y:.0f})  —  use Grid Settings to fine-tune size."
+        )
 
     def _add_entity(self):
         dlg = AddEntityDialog(self.grid.max_number, self)

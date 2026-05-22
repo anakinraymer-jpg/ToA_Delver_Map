@@ -11,8 +11,9 @@ from hex_grid import HexGrid
 
 
 class HexMapCanvas(QGraphicsView):
-    entity_selected = pyqtSignal(object)   # Entity | None
-    move_requested = pyqtSignal(object, int)  # entity, target_node
+    entity_selected = pyqtSignal(object)        # Entity | None
+    move_requested = pyqtSignal(object, int)    # entity, target_node
+    origin_clicked = pyqtSignal(float, float)   # x, y scene coords
 
     def __init__(self, grid: HexGrid, em: EntityManager):
         super().__init__()
@@ -24,6 +25,7 @@ class HexMapCanvas(QGraphicsView):
         self._bg_pixmap: Optional[QPixmap] = None
         self._pan_start = None
         self.grid_opacity: int = 180  # 0–255
+        self._origin_click_mode: bool = False
 
         self._scene = QGraphicsScene(self)
         self.setScene(self._scene)
@@ -67,6 +69,12 @@ class HexMapCanvas(QGraphicsView):
     def set_grid_opacity(self, value: int):
         self.grid_opacity = max(0, min(255, value))
         self.refresh()
+
+    def set_origin_click_mode(self, enabled: bool):
+        self._origin_click_mode = enabled
+        self.setCursor(
+            Qt.CursorShape.CrossCursor if enabled else Qt.CursorShape.ArrowCursor
+        )
 
     # ------------------------------------------------------------------
     # Drawing
@@ -150,6 +158,13 @@ class HexMapCanvas(QGraphicsView):
         if event.button() == Qt.MouseButton.MiddleButton:
             self._pan_start = event.pos()
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            return
+
+        # Origin-click calibration mode: any left-click sets the origin
+        if self._origin_click_mode and event.button() == Qt.MouseButton.LeftButton:
+            sp = self.mapToScene(event.pos())
+            self.set_origin_click_mode(False)
+            self.origin_clicked.emit(sp.x(), sp.y())
             return
 
         if event.button() == Qt.MouseButton.RightButton:

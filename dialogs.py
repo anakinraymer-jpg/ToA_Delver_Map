@@ -1,4 +1,4 @@
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -17,23 +17,43 @@ from PyQt6.QtWidgets import (
 
 
 class GridSettingsDialog(QDialog):
+    """
+    Live-preview grid settings dialog.
+    Emits `settings_changed` on every control change so the caller can
+    apply updates to the canvas in real-time.  Original values are stored
+    so the caller can restore them if the user cancels.
+    """
+    settings_changed = pyqtSignal(dict)
+
     def __init__(self, grid, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Grid Settings")
         layout = QFormLayout(self)
 
+        # Store originals for cancel-restore
+        self._original = {
+            "size": grid.size,
+            "origin": grid.origin,
+            "cols": grid.cols,
+            "rows": grid.rows,
+            "orientation": grid.orientation,
+        }
+
         self.hex_size = QDoubleSpinBox()
         self.hex_size.setRange(10, 300)
         self.hex_size.setValue(grid.size)
         self.hex_size.setSuffix(" px")
+        self.hex_size.setSingleStep(0.5)
 
         self.origin_x = QDoubleSpinBox()
         self.origin_x.setRange(-9999, 9999)
         self.origin_x.setValue(grid.origin[0])
+        self.origin_x.setSingleStep(1.0)
 
         self.origin_y = QDoubleSpinBox()
         self.origin_y.setRange(-9999, 9999)
         self.origin_y.setValue(grid.origin[1])
+        self.origin_y.setSingleStep(1.0)
 
         self.cols = QSpinBox()
         self.cols.setRange(1, 200)
@@ -54,12 +74,26 @@ class GridSettingsDialog(QDialog):
         layout.addRow("Rows:", self.rows)
         layout.addRow("Orientation:", self.orientation)
 
+        note = QLabel("<small><i>Changes preview live on the map.</i></small>")
+        layout.addRow(note)
+
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addRow(buttons)
+
+        # Wire every control to emit a live preview
+        self.hex_size.valueChanged.connect(self._emit)
+        self.origin_x.valueChanged.connect(self._emit)
+        self.origin_y.valueChanged.connect(self._emit)
+        self.cols.valueChanged.connect(self._emit)
+        self.rows.valueChanged.connect(self._emit)
+        self.orientation.currentTextChanged.connect(self._emit)
+
+    def _emit(self):
+        self.settings_changed.emit(self.get_values())
 
     def get_values(self) -> dict:
         return {
@@ -69,6 +103,14 @@ class GridSettingsDialog(QDialog):
             "rows": self.rows.value(),
             "orientation": self.orientation.currentText(),
         }
+
+    def get_original(self) -> dict:
+        return self._original
+
+    def set_origin(self, x: float, y: float):
+        """Called externally when the user clicks a hex centre on the map."""
+        self.origin_x.setValue(x)
+        self.origin_y.setValue(y)
 
 
 class AddEntityDialog(QDialog):
