@@ -13,6 +13,7 @@ class Entity:
     members: list = field(default_factory=list)   # list[str] — member entity IDs (groups only)
     bot_target: Optional[int] = None              # target hex node for auto-pathfinding (bots only)
     flavor_text: str = ""                         # optional notes / backstory shown in info panel
+    seafaring: bool = False                       # can enter Ocean / Rivers terrain tiles
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
     @property

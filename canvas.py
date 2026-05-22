@@ -11,6 +11,9 @@ from hex_grid import HexGrid
 from locations import LocationManager
 from terrain import TERRAIN_ABBR, TERRAIN_ALPHA, TERRAIN_COLORS, TerrainMap
 
+# Terrain types that require the Seafaring flag to enter
+WATER_TERRAINS: frozenset[str] = frozenset({"Ocean", "Rivers"})
+
 
 class HexMapCanvas(QGraphicsView):
     entity_selected = pyqtSignal(object)        # Entity | None
@@ -98,6 +101,14 @@ class HexMapCanvas(QGraphicsView):
             self._valid_targets = {c.number for c in self.grid.all_cells} - {entity.node}
         else:
             self._valid_targets = set(self.grid.neighbor_numbers(entity.node))
+
+        # Remove water tiles for non-seafaring entities
+        if entity is not None and not getattr(entity, "seafaring", False):
+            self._valid_targets = {
+                n for n in self._valid_targets
+                if self.tm.get(n) not in WATER_TERRAINS
+            }
+
         self.refresh()
         self.entity_selected.emit(entity)
 

@@ -449,6 +449,7 @@ class MainWindow(QMainWindow):
             e = Entity(
                 name=v["name"], node=v["node"], color=v["color"],
                 is_group=v["is_group"], is_bot=v["is_bot"],
+                seafaring=v["seafaring"],
             )
             self.em.add(e)
             self._refresh_list()
@@ -630,6 +631,7 @@ class MainWindow(QMainWindow):
                     "is_group": e.is_group,
                     "is_bot": e.is_bot,
                     "members": list(e.members),
+                    "seafaring": e.seafaring,
                     "bot_target": e.bot_target,
                     "flavor_text": e.flavor_text,
                 }
@@ -668,6 +670,7 @@ class MainWindow(QMainWindow):
                         is_group=ed.get("is_group", False),
                         is_bot=ed.get("is_bot", False),
                         members=list(ed.get("members", [])),
+                        seafaring=ed.get("seafaring", False),
                         bot_target=ed.get("bot_target"),
                         flavor_text=ed.get("flavor_text", ""),
                         id=ed["id"],
@@ -715,6 +718,8 @@ class MainWindow(QMainWindow):
                 tags.append("G")
             if e.is_bot:
                 tags.append("B")
+            if e.seafaring:
+                tags.append("S")
             prefix = f"[{'|'.join(tags)}] " if tags else ""
             cnt = f"  ({len(e.members)} mbr)" if e.is_group and e.members else ""
             acted = e.id in self.canvas._moved_ids
@@ -751,6 +756,14 @@ class MainWindow(QMainWindow):
                 kind_line = "Bot" if entity.is_bot else "Character"
                 mbr_line = ""
 
+            # Trait badges
+            traits = []
+            if getattr(entity, "seafaring", False):
+                traits.append("Seafaring")
+            if entity.is_bot:
+                traits.append("Bot")
+            trait_line = f"\n{' · '.join(traits)}" if traits else ""
+
             # Bot target line (show location name if available, else node number)
             target_line = ""
             if entity.is_bot and entity.bot_target is not None:
@@ -767,7 +780,7 @@ class MainWindow(QMainWindow):
             self.info_label.setText(
                 f"{kind_line}: {entity.name}\n"
                 f"Node: {entity.node}"
-                f"{mbr_line}{target_line}{flavor_line}"
+                f"{trait_line}{mbr_line}{target_line}{flavor_line}"
             )
             for i in range(self.entity_list.count()):
                 item = self.entity_list.item(i)
@@ -970,14 +983,27 @@ class MainWindow(QMainWindow):
     # Bot auto-movement
     # ------------------------------------------------------------------
 
+    def _water_blocked_nodes(self) -> set[int]:
+        """Return the set of all Ocean/Rivers hex nodes (used for terrain gating)."""
+        from canvas import WATER_TERRAINS
+        return {
+            cell.number
+            for cell in self.grid.all_cells
+            if self.tm.get(cell.number) in WATER_TERRAINS
+        }
+
     def _move_all_bots(self):
         """
         Move every top-level bot that hasn't acted yet one step toward its
         bot_target using BFS pathfinding.  A 25% chance grants a second step
-        (same as manual movement).  No merge prompts are shown for bot moves.
+        (same as manual movement).  Non-seafaring bots cannot enter Ocean or
+        Rivers tiles.  No merge prompts are shown for bot moves.
         """
         bots = [e for e in self.em.toplevel if e.is_bot]
         moved_count = 0
+
+        # Compute water nodes once (shared across all bots)
+        all_water = self._water_blocked_nodes()
 
         for bot in bots:
             if bot.id in self.canvas._moved_ids:
@@ -988,7 +1014,10 @@ class MainWindow(QMainWindow):
                 self.canvas.mark_moved(bot.id)
                 continue
 
-            next_node = find_next_step(self.grid, bot.node, bot.bot_target)
+            blocked = set() if bot.seafaring else all_water
+            next_node = find_next_step(
+                self.grid, bot.node, bot.bot_target, blocked=blocked
+            )
             if next_node is None:
                 self.canvas.mark_moved(bot.id)
                 continue
@@ -998,7 +1027,9 @@ class MainWindow(QMainWindow):
 
             # 25% chance of a bonus step
             if random.random() < 0.25:
-                bonus = find_next_step(self.grid, bot.node, bot.bot_target)
+                bonus = find_next_step(
+                    self.grid, bot.node, bot.bot_target, blocked=blocked
+                )
                 if bonus is not None:
                     self.em.move(bot.id, bonus)
 
@@ -1037,10 +1068,14 @@ class MainWindow(QMainWindow):
             entity.name = v["name"]
             entity.color = v["color"]
             entity.is_bot = v["is_bot"]
+            entity.seafaring = v["seafaring"]
             entity.bot_target = v["bot_target"]
             entity.flavor_text = v["flavor_text"]
             self._refresh_list()
             self._on_entity_selected(entity)   # refresh info panel
+            # Recalculate valid targets in case seafaring changed
+            if self.canvas._selected_entity and self.canvas._selected_entity.id == entity.id:
+                self.canvas.set_selected(entity)
             self.canvas.refresh()
             self.status_bar.showMessage(f"'{entity.name}' updated.")
 
@@ -1055,6 +1090,7 @@ class MainWindow(QMainWindow):
                 v = dlg.get_values()
                 group.name = v["name"]
                 group.is_bot = v["is_bot"]
+                group.seafaring = v["seafaring"]
                 group.bot_target = v["bot_target"]
                 group.flavor_text = v["flavor_text"]
                 # Apply member changes

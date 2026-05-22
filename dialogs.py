@@ -135,6 +135,7 @@ class AddEntityDialog(QDialog):
 
         self.is_group = QCheckBox("This is a group")
         self.is_bot = QCheckBox("This is a bot")
+        self.seafaring = QCheckBox("Seafaring  (can enter Ocean / Rivers)")
 
         color_row = QHBoxLayout()
         self._preview = QLabel()
@@ -151,6 +152,7 @@ class AddEntityDialog(QDialog):
         layout.addRow("Color:", color_row)
         layout.addRow("", self.is_group)
         layout.addRow("", self.is_bot)
+        layout.addRow("", self.seafaring)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -178,6 +180,7 @@ class AddEntityDialog(QDialog):
             "color": self._color,
             "is_group": self.is_group.isChecked(),
             "is_bot": self.is_bot.isChecked(),
+            "seafaring": self.seafaring.isChecked(),
         }
 
 
@@ -215,6 +218,9 @@ class EditEntityDialog(QDialog):
         self.is_bot = QCheckBox("This is a bot")
         self.is_bot.setChecked(entity.is_bot)
 
+        self.seafaring = QCheckBox("Seafaring  (can enter Ocean / Rivers)")
+        self.seafaring.setChecked(getattr(entity, "seafaring", False))
+
         # Flavor / notes text
         self.flavor_edit = QPlainTextEdit()
         self.flavor_edit.setPlaceholderText("Optional notes, backstory, or flavor…")
@@ -224,6 +230,7 @@ class EditEntityDialog(QDialog):
         layout.addRow("Name:", self.name_edit)
         layout.addRow("Color:", color_row)
         layout.addRow("", self.is_bot)
+        layout.addRow("", self.seafaring)
         layout.addRow("Notes:", self.flavor_edit)
 
         # ── Bot Target ────────────────────────────────────────────────
@@ -279,6 +286,7 @@ class EditEntityDialog(QDialog):
             "name": self.name_edit.text().strip(),
             "color": self._color,
             "is_bot": self.is_bot.isChecked(),
+            "seafaring": self.seafaring.isChecked(),
             "bot_target": bot_target,
             "flavor_text": self.flavor_edit.toPlainText().strip(),
         }
@@ -316,14 +324,17 @@ class EditGroupDialog(QDialog):
         root = QVBoxLayout(self)
         root.setSpacing(8)
 
-        # --- Header row: name + bot ---
+        # --- Header row: name + bot + seafaring ---
         hdr = QFormLayout()
         hdr.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         self.name_edit = QLineEdit(group.name)
         self.is_bot = QCheckBox("Bot group")
         self.is_bot.setChecked(group.is_bot)
+        self.seafaring = QCheckBox("Seafaring  (can enter Ocean / Rivers)")
+        self.seafaring.setChecked(getattr(group, "seafaring", False))
         hdr.addRow("Group Name:", self.name_edit)
         hdr.addRow("", self.is_bot)
+        hdr.addRow("", self.seafaring)
         root.addLayout(hdr)
 
         # --- Dual-pane member editor ---
@@ -467,6 +478,7 @@ class EditGroupDialog(QDialog):
         return {
             "name": self.name_edit.text().strip() or self._group.name,
             "is_bot": self.is_bot.isChecked(),
+            "seafaring": self.seafaring.isChecked(),
             "members": list(self._members),        # desired final member list
             "bot_target": bot_target,
             "flavor_text": self.flavor_edit.toPlainText().strip(),
