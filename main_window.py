@@ -842,24 +842,31 @@ class MainWindow(QMainWindow):
 
     def _check_merge_opportunity(self, node: int, moved: Entity):
         """
-        After a move, if multiple top-level entities share the same hex,
-        offer Merge, Combat, or Nothing.
+        Called after any manual move.  Delegates to the shared encounter
+        resolver if two or more top-level entities now share the hex.
         """
-        at_node = self.em.at_node(node)
-        others = [e for e in at_node if e.id != moved.id]
-        if not others:
+        entities = self.em.at_node(node)
+        if len(entities) >= 2:
+            self._resolve_encounter_on_hex(node, entities)
+
+    def _resolve_encounter_on_hex(self, node: int, entities: list):
+        """
+        Show the Merge / ⚔ Combat / Nothing prompt for all top-level
+        entities currently on *node*.
+
+        Called from both manual movement (_check_merge_opportunity) and
+        bot movement (_move_all_bots), so the logic lives in one place.
+        """
+        if len(entities) < 2:
             return
 
-        all_here = list(at_node)
-        names_str = " &amp; ".join(e.name for e in all_here)
+        names_str = " &amp; ".join(e.name for e in entities)
 
-        # ── Initial encounter prompt ───────────────────────────────
         msg = QMessageBox(self)
         msg.setWindowTitle(f"Encounter — Hex {node}")
         msg.setTextFormat(Qt.TextFormat.RichText)
         msg.setText(
-            f"<b>{names_str}</b><br>are now on hex {node}.<br><br>"
-            f"What happens?"
+            f"<b>{names_str}</b><br>are on hex {node}.<br><br>What happens?"
         )
         merge_btn  = msg.addButton("Merge",      QMessageBox.ButtonRole.ActionRole)
         combat_btn = msg.addButton("⚔  Combat", QMessageBox.ButtonRole.ActionRole)
@@ -868,63 +875,54 @@ class MainWindow(QMainWindow):
         clicked = msg.clickedButton()
 
         if clicked == combat_btn:
-            self._resolve_combat(node, all_here)
-            return          # _resolve_combat handles refresh
+            self._resolve_combat(node, entities)
+            return                  # _resolve_combat handles its own refresh
 
         if clicked != merge_btn:
             self._refresh_list()
             self.canvas.refresh()
             return
 
-        # ── Merge flow (unchanged logic) ───────────────────────────
-        groups_there = [e for e in others if e.is_group]
-        indivs_there = [e for e in others if not e.is_group]
+        # ── Merge sub-dialog ──────────────────────────────────────
+        groups_there = [e for e in entities if e.is_group]
+        indivs_there = [e for e in entities if not e.is_group]
 
-        if groups_there and not moved.is_group:
+        if groups_there and indivs_there:
+            # At least one existing group + loose entities → offer to add them in
             group = groups_there[0]
+            add_names = ", ".join(e.name for e in indivs_there)
+            plural = len(indivs_there) > 1
             ans = QMessageBox.question(
                 self,
                 "Join Group?",
-                f"<b>{moved.name}</b> is now on the same hex as group "
-                f"<b>{group.name}</b>.<br>Add {moved.name} to the group?",
-            )
-            if ans == QMessageBox.StandardButton.Yes:
-                self.em.add_to_group(group.id, moved.id)
-                self.canvas.set_selected(group)
-
-        elif moved.is_group and indivs_there:
-            names = ", ".join(e.name for e in indivs_there)
-            ans = QMessageBox.question(
-                self,
-                "Add to Group?",
-                f"<b>{names}</b> {'are' if len(indivs_there) > 1 else 'is'} on the same "
-                f"hex as group <b>{moved.name}</b>.<br>"
-                f"Add {'them' if len(indivs_there) > 1 else 'them'} to the group?",
+                f"<b>{add_names}</b> {'are' if plural else 'is'} on the same hex "
+                f"as group <b>{group.name}</b>.<br>"
+                f"Add {'them' if plural else 'them'} to the group?",
             )
             if ans == QMessageBox.StandardButton.Yes:
                 for e in indivs_there:
-                    self.em.add_to_group(moved.id, e.id)
-                self.canvas.set_selected(moved)
+                    self.em.add_to_group(group.id, e.id)
+                self.canvas.set_selected(group)
 
-        elif not moved.is_group and indivs_there:
-            all_merge = [moved] + indivs_there
-            names = " & ".join(e.name for e in all_merge)
+        elif len(indivs_there) >= 2:
+            # All individuals — offer to form a new group
+            names = " &amp; ".join(e.name for e in indivs_there)
             ans = QMessageBox.question(
                 self,
                 "Merge Into Group?",
-                f"Multiple characters are now on hex {node}:<br>"
-                f"<b>{names}</b><br><br>Merge them into a group?",
+                f"Multiple entities on hex {node}:<br><b>{names}</b>"
+                f"<br><br>Merge them into a group?",
             )
             if ans == QMessageBox.StandardButton.Yes:
-                default_name = " & ".join(e.name.split()[0] for e in all_merge)
+                default_name = " & ".join(e.name.split()[0] for e in indivs_there)
                 group_name, ok = QInputDialog.getText(
                     self, "Group Name", "Name the new group:", text=default_name
                 )
                 if ok and group_name.strip():
                     new_group = self.em.merge_into_group(
-                        [e.id for e in all_merge],
+                        [e.id for e in indivs_there],
                         group_name.strip(),
-                        moved.color,
+                        indivs_there[0].color,
                     )
                     self.canvas.set_selected(new_group)
 
@@ -1110,23 +1108,27 @@ class MainWindow(QMainWindow):
 
     def _move_all_bots(self):
         """
-        Move every top-level bot that hasn't acted yet one step toward its
-        bot_target using BFS pathfinding.  A 25% chance grants a second step
-        (same as manual movement).  Non-seafaring bots cannot enter Ocean or
-        Rivers tiles.  No merge prompts are shown for bot moves.
+        Move every top-level bot one step toward its target (25 % bonus step).
+
+        After all bots have moved, any hexes where a bot landed alongside
+        other entities are resolved as standard encounters (Merge / Combat /
+        Nothing), one at a time.  If there are multiple encounters a summary
+        is shown first so the GM knows what to expect.
         """
         bots = [e for e in self.em.toplevel if e.is_bot]
         moved_count = 0
-
-        # Compute water nodes once (shared across all bots)
         all_water = self._water_blocked_nodes()
+
+        # Track the final position of each bot that actually moves,
+        # preserving encounter order and deduplicating same-node arrivals.
+        encounter_candidates: list[int] = []
+        seen_dest: set[int] = set()
 
         for bot in bots:
             if bot.id in self.canvas._moved_ids:
-                continue  # already acted this day
+                continue
 
             if bot.bot_target is None or bot.node == bot.bot_target:
-                # No target or already there — count as "waited"
                 self.canvas.mark_moved(bot.id)
                 continue
 
@@ -1141,7 +1143,6 @@ class MainWindow(QMainWindow):
             self.em.move(bot.id, next_node)
             moved_count += 1
 
-            # 25% chance of a bonus step
             if random.random() < 0.25:
                 bonus = find_next_step(
                     self.grid, bot.node, bot.bot_target, blocked=blocked
@@ -1151,19 +1152,84 @@ class MainWindow(QMainWindow):
 
             self.canvas.mark_moved(bot.id)
 
+            # Record destination (bot.node is now the final position)
+            dest = bot.node
+            if dest not in seen_dest:
+                seen_dest.add(dest)
+                encounter_candidates.append(dest)
+
+        # Refresh display before any encounter dialogs
         self.canvas.set_selected(None)
         self._refresh_list()
         self._update_day_ui()
         self.canvas.refresh()
 
-        if moved_count:
+        # Build the ordered list of hexes that actually have encounters
+        pending: list[int] = [
+            n for n in encounter_candidates
+            if len(self.em.at_node(n)) > 1
+        ]
+
+        if not pending:
             self.status_bar.showMessage(
-                f"Bots moved: {moved_count}  [{self._progress_str()}]"
+                (f"Bots moved: {moved_count}  [{self._progress_str()}]"
+                 if moved_count else
+                 f"No bots needed to move.  [{self._progress_str()}]")
             )
+            self._check_day_end()
+            return
+
+        # ── One or more encounters to resolve ────────────────────────
+        if len(pending) == 1:
+            node = pending[0]
+            self.status_bar.showMessage(
+                f"Bots moved: {moved_count} — encounter on hex {node}."
+            )
+            entities = self.em.at_node(node)
+            if len(entities) > 1:
+                self._resolve_encounter_on_hex(node, entities)
         else:
-            self.status_bar.showMessage(
-                f"No bots needed to move.  [{self._progress_str()}]"
-            )
+            # Show a summary list first so the GM knows what's coming
+            lines = []
+            for n in pending:
+                ents = self.em.at_node(n)
+                if len(ents) > 1:
+                    lines.append(
+                        f"  Hex {n}:  "
+                        + "  &amp;  ".join(e.name for e in ents)
+                    )
+
+            if lines:
+                summary_msg = QMessageBox(self)
+                summary_msg.setWindowTitle("Bot Movement — Encounters")
+                summary_msg.setTextFormat(Qt.TextFormat.RichText)
+                summary_msg.setText(
+                    f"Bot movement caused <b>{len(lines)} encounter(s)</b>.<br>"
+                    f"They will be resolved one at a time.<br><br>"
+                    + "<br>".join(lines)
+                )
+                resolve_btn = summary_msg.addButton(
+                    "Resolve All", QMessageBox.ButtonRole.AcceptRole
+                )
+                skip_btn = summary_msg.addButton(
+                    "Skip All", QMessageBox.ButtonRole.RejectRole
+                )
+                summary_msg.exec()
+
+                if summary_msg.clickedButton() == skip_btn:
+                    self._check_day_end()
+                    return
+
+            # Process sequentially; re-check each hex in case earlier
+            # combat resolution already removed or moved some entities.
+            total = len(pending)
+            for i, node in enumerate(pending, 1):
+                entities = self.em.at_node(node)
+                if len(entities) > 1:
+                    self.status_bar.showMessage(
+                        f"Encounter {i} of {total} — Hex {node}"
+                    )
+                    self._resolve_encounter_on_hex(node, entities)
 
         self._check_day_end()
 
