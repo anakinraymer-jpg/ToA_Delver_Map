@@ -757,7 +757,27 @@ class MainWindow(QMainWindow):
         if not entities:
             return
         if all(e.id in self.canvas._moved_ids for e in entities):
+            self._request_day_advance()
+
+    def _request_day_advance(self):
+        """All entities have acted — ask the GM whether to advance the day."""
+        self.status_bar.showMessage(
+            f"All entities have acted on Day {self.day}.  "
+            f"Advance to Day {self.day + 1}?"
+        )
+        ans = QMessageBox.question(
+            self,
+            "Advance Day?",
+            f"All entities have acted.\n\nAdvance to Day {self.day + 1}?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if ans == QMessageBox.StandardButton.Yes:
             self._advance_day()
+        else:
+            self.status_bar.showMessage(
+                f"Day {self.day} held — click Advance Day when ready."
+            )
 
     def _advance_day(self):
         """Increment day and reset all turn state."""
