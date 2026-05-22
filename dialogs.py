@@ -16,8 +16,10 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QRadioButton,
     QSpinBox,
     QVBoxLayout,
 )
@@ -483,6 +485,115 @@ class EditGroupDialog(QDialog):
             "bot_target": bot_target,
             "flavor_text": self.flavor_edit.toPlainText().strip(),
         }
+
+
+# ---------------------------------------------------------------------------
+# Combat resolution dialog
+# ---------------------------------------------------------------------------
+
+class CombatDialog(QDialog):
+    """
+    Presented when entities share a hex and the GM chooses Combat.
+
+    The GM checks off the Winner(s); every unchecked entity is a Loser.
+    A radio button group determines what happens to Losers:
+      - "Move away"  → main window will ask for a destination per loser
+      - "Remove"     → entity (and group members) are deleted from the map
+    """
+
+    def __init__(self, entities: list, node: int, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"⚔  Combat — Hex {node}")
+        self.setMinimumWidth(380)
+        self._entities = entities
+
+        root = QVBoxLayout(self)
+        root.setSpacing(10)
+
+        header = QLabel(
+            f"<b>Combat on hex {node}</b><br>"
+            "<small>Check the <b>Winner(s)</b>. "
+            "Unchecked entities are <b>Losers</b>.</small>"
+        )
+        header.setWordWrap(True)
+        root.addWidget(header)
+
+        # ── Checkable entity list ────────────────────────────────────
+        self._list = QListWidget()
+        self._list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
+        for e in entities:
+            if e.is_group:
+                kind = f"Group · {len(e.members)} member{'s' if len(e.members) != 1 else ''}"
+            elif e.is_bot:
+                kind = "Bot"
+            else:
+                kind = "Character"
+            item = QListWidgetItem(f"  {e.name}   [{kind}]")
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Unchecked)
+            item.setData(Qt.ItemDataRole.UserRole, e.id)
+            item.setForeground(QColor(e.color))
+            self._list.addItem(item)
+        root.addWidget(self._list)
+
+        # ── Loser fate ───────────────────────────────────────────────
+        fate_box = QGroupBox("Fate of Loser(s)")
+        fate_layout = QVBoxLayout(fate_box)
+        self._radio_move = QRadioButton(
+            "Move to an adjacent hex  (you'll choose destination next)"
+        )
+        self._radio_remove = QRadioButton(
+            "Remove from the map  (defeated / slain)"
+        )
+        self._radio_move.setChecked(True)
+        fate_layout.addWidget(self._radio_move)
+        fate_layout.addWidget(self._radio_remove)
+        root.addWidget(fate_box)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._on_accept)
+        buttons.rejected.connect(self.reject)
+        root.addWidget(buttons)
+
+    # ------------------------------------------------------------------
+
+    def _on_accept(self):
+        winners = self.get_winner_ids()
+        if not winners:
+            QMessageBox.warning(
+                self, "No Winner Selected",
+                "Please check at least one entity as the winner."
+            )
+            return
+        if len(winners) == self._list.count():
+            QMessageBox.warning(
+                self, "No Loser",
+                "At least one entity must be a loser — uncheck one."
+            )
+            return
+        self.accept()
+
+    def get_winner_ids(self) -> list:
+        """IDs of entities marked as winners (checked)."""
+        return [
+            self._list.item(i).data(Qt.ItemDataRole.UserRole)
+            for i in range(self._list.count())
+            if self._list.item(i).checkState() == Qt.CheckState.Checked
+        ]
+
+    def get_loser_ids(self) -> list:
+        """IDs of entities NOT marked as winners."""
+        return [
+            self._list.item(i).data(Qt.ItemDataRole.UserRole)
+            for i in range(self._list.count())
+            if self._list.item(i).checkState() != Qt.CheckState.Checked
+        ]
+
+    def get_loser_action(self) -> str:
+        """'move' or 'remove'."""
+        return "move" if self._radio_move.isChecked() else "remove"
 
 
 class AddLocationDialog(QDialog):

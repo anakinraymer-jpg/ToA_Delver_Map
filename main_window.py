@@ -38,6 +38,7 @@ from canvas import HexMapCanvas
 from dialogs import (
     AddEntityDialog,
     AddLocationDialog,
+    CombatDialog,
     EditEntityDialog,
     EditGroupDialog,
     GridSettingsDialog,
@@ -836,24 +837,50 @@ class MainWindow(QMainWindow):
         self._update_day_ui()
 
     # ------------------------------------------------------------------
-    # Merge / join logic
+    # Encounter dispatch  (Merge / Combat / Nothing)
     # ------------------------------------------------------------------
 
     def _check_merge_opportunity(self, node: int, moved: Entity):
         """
         After a move, if multiple top-level entities share the same hex,
-        offer to merge them into a group or join an existing one.
+        offer Merge, Combat, or Nothing.
         """
         at_node = self.em.at_node(node)
         others = [e for e in at_node if e.id != moved.id]
         if not others:
             return
 
+        all_here = list(at_node)
+        names_str = " &amp; ".join(e.name for e in all_here)
+
+        # ── Initial encounter prompt ───────────────────────────────
+        msg = QMessageBox(self)
+        msg.setWindowTitle(f"Encounter — Hex {node}")
+        msg.setTextFormat(Qt.TextFormat.RichText)
+        msg.setText(
+            f"<b>{names_str}</b><br>are now on hex {node}.<br><br>"
+            f"What happens?"
+        )
+        merge_btn  = msg.addButton("Merge",      QMessageBox.ButtonRole.ActionRole)
+        combat_btn = msg.addButton("⚔  Combat", QMessageBox.ButtonRole.ActionRole)
+        msg.addButton("Nothing",                  QMessageBox.ButtonRole.RejectRole)
+        msg.exec()
+        clicked = msg.clickedButton()
+
+        if clicked == combat_btn:
+            self._resolve_combat(node, all_here)
+            return          # _resolve_combat handles refresh
+
+        if clicked != merge_btn:
+            self._refresh_list()
+            self.canvas.refresh()
+            return
+
+        # ── Merge flow (unchanged logic) ───────────────────────────
         groups_there = [e for e in others if e.is_group]
         indivs_there = [e for e in others if not e.is_group]
 
         if groups_there and not moved.is_group:
-            # Moved entity landed on a hex that already has a group
             group = groups_there[0]
             ans = QMessageBox.question(
                 self,
@@ -866,7 +893,6 @@ class MainWindow(QMainWindow):
                 self.canvas.set_selected(group)
 
         elif moved.is_group and indivs_there:
-            # A group moved onto a hex that has loose entities
             names = ", ".join(e.name for e in indivs_there)
             ans = QMessageBox.question(
                 self,
@@ -881,9 +907,8 @@ class MainWindow(QMainWindow):
                 self.canvas.set_selected(moved)
 
         elif not moved.is_group and indivs_there:
-            # Two or more individuals share a hex — offer to form a group
-            all_here = [moved] + indivs_there
-            names = " & ".join(e.name for e in all_here)
+            all_merge = [moved] + indivs_there
+            names = " & ".join(e.name for e in all_merge)
             ans = QMessageBox.question(
                 self,
                 "Merge Into Group?",
@@ -891,13 +916,13 @@ class MainWindow(QMainWindow):
                 f"<b>{names}</b><br><br>Merge them into a group?",
             )
             if ans == QMessageBox.StandardButton.Yes:
-                default_name = " & ".join(e.name.split()[0] for e in all_here)
+                default_name = " & ".join(e.name.split()[0] for e in all_merge)
                 group_name, ok = QInputDialog.getText(
                     self, "Group Name", "Name the new group:", text=default_name
                 )
                 if ok and group_name.strip():
                     new_group = self.em.merge_into_group(
-                        [e.id for e in all_here],
+                        [e.id for e in all_merge],
                         group_name.strip(),
                         moved.color,
                     )
@@ -905,6 +930,97 @@ class MainWindow(QMainWindow):
 
         self._refresh_list()
         self.canvas.refresh()
+
+    # ------------------------------------------------------------------
+    # Combat resolution
+    # ------------------------------------------------------------------
+
+    def _resolve_combat(self, node: int, entities: list):
+        """
+        Open CombatDialog, then apply the result:
+          - Winners stay on the hex untouched.
+          - Losers are either moved to an adjacent hex or removed.
+        """
+        dlg = CombatDialog(entities, node, self)
+        if not dlg.exec():
+            self._refresh_list()
+            self.canvas.refresh()
+            return
+
+        winner_ids = set(dlg.get_winner_ids())
+        loser_action = dlg.get_loser_action()
+        losers = [e for e in entities if e.id not in winner_ids]
+
+        neighbors = self.grid.neighbor_numbers(node)
+        # Build human-readable neighbor labels (include terrain type if set)
+        neighbor_labels = []
+        for n in neighbors:
+            terrain = self.tm.get(n)
+            label = f"{n}  [{terrain}]" if terrain else str(n)
+            neighbor_labels.append((n, label))
+
+        for loser in losers:
+            if loser_action == "remove":
+                self._remove_entity_and_members(loser)
+                self.status_bar.showMessage(
+                    f"'{loser.name}' was removed from the map after combat."
+                )
+            else:
+                # Move — let the GM pick a destination
+                if not neighbor_labels:
+                    # Isolated hex — fall back to removal
+                    self._remove_entity_and_members(loser)
+                    self.status_bar.showMessage(
+                        f"'{loser.name}' has nowhere to flee — removed."
+                    )
+                    continue
+
+                options = [lbl for _, lbl in neighbor_labels]
+                chosen, ok = QInputDialog.getItem(
+                    self,
+                    f"Move Loser — {loser.name}",
+                    f"Move '<b>{loser.name}</b>' to which adjacent hex?\n"
+                    f"(Currently on hex {node})",
+                    options,
+                    editable=False,
+                )
+                if ok:
+                    # Parse the node number from the label string
+                    dest_node = int(chosen.split()[0])
+                    self.em.move(loser.id, dest_node)
+                    self.status_bar.showMessage(
+                        f"'{loser.name}' fled to hex {dest_node} after combat."
+                    )
+                else:
+                    # GM cancelled the destination picker — leave in place
+                    self.status_bar.showMessage(
+                        f"'{loser.name}' stays on hex {node} (no destination chosen)."
+                    )
+
+        # Deselect if the selected entity no longer exists
+        sel = self.canvas._selected_entity
+        if sel and self.em.get(sel.id) is None:
+            self.canvas.set_selected(None)
+
+        self._refresh_list()
+        self._update_day_ui()
+        self.canvas.refresh()
+
+    def _remove_entity_and_members(self, entity: Entity):
+        """
+        Remove an entity from the map.  For groups, all members are also
+        removed.  Clears the entity from any active turn-tracking state.
+        """
+        # Clear turn state
+        self.canvas._moved_ids.discard(entity.id)
+        if self._bonus_move_entity == entity.id:
+            self._bonus_move_entity = None
+
+        if entity.is_group:
+            for mid in list(entity.members):
+                self.canvas._moved_ids.discard(mid)
+                self.em.remove(mid)
+        self.em.remove(entity.id)
 
     # ------------------------------------------------------------------
     # Day / turn system
