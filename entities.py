@@ -11,6 +11,7 @@ class Entity:
     is_group: bool = False
     is_bot: bool = False
     members: list = field(default_factory=list)   # list[str] — member entity IDs (groups only)
+    bot_target: Optional[int] = None              # target hex node for auto-pathfinding (bots only)
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
     @property

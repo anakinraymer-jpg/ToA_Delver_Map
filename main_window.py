@@ -45,6 +45,7 @@ from dialogs import (
 from entities import Entity, EntityManager
 from hex_grid import HexGrid
 from locations import Location, LocationManager
+from pathfinding import find_next_step
 from terrain import TERRAIN_COLORS, TERRAINS, TerrainMap
 
 
@@ -124,9 +125,13 @@ class MainWindow(QMainWindow):
         adv_btn.clicked.connect(self._advance_day_manual)
         day_btn_row.addWidget(wait_btn)
         day_btn_row.addWidget(adv_btn)
+        bots_btn = QPushButton("Move All Bots")
+        bots_btn.setToolTip("Move every bot one step toward its target")
+        bots_btn.clicked.connect(self._move_all_bots)
         dg.addWidget(self.day_label)
         dg.addWidget(self.day_progress_label)
         dg.addLayout(day_btn_row)
+        dg.addWidget(bots_btn)
 
         # ── Characters & Groups ───────────────────────────────────────
         eg = QGroupBox("Characters & Groups")
@@ -339,6 +344,11 @@ class MainWindow(QMainWindow):
         wait_act.setToolTip("End selected entity's turn without moving (also ends bonus move)")
         wait_act.triggered.connect(self._on_entity_wait)
         tb.addAction(wait_act)
+
+        bots_act = QAction("Move All Bots", self)
+        bots_act.setToolTip("Move every bot one step toward its assigned target")
+        bots_act.triggered.connect(self._move_all_bots)
+        tb.addAction(bots_act)
 
         desel_act = QAction("Deselect  [Esc]", self)
         desel_act.setShortcut("Escape")
@@ -594,6 +604,7 @@ class MainWindow(QMainWindow):
                     "is_group": e.is_group,
                     "is_bot": e.is_bot,
                     "members": list(e.members),
+                    "bot_target": e.bot_target,
                 }
                 for e in self.em.all
             ],
@@ -630,6 +641,7 @@ class MainWindow(QMainWindow):
                         is_group=ed.get("is_group", False),
                         is_bot=ed.get("is_bot", False),
                         members=list(ed.get("members", [])),
+                        bot_target=ed.get("bot_target"),
                         id=ed["id"],
                     )
                 )
@@ -911,6 +923,60 @@ class MainWindow(QMainWindow):
         self._advance_day()
 
     # ------------------------------------------------------------------
+    # Bot auto-movement
+    # ------------------------------------------------------------------
+
+    def _move_all_bots(self):
+        """
+        Move every top-level bot that hasn't acted yet one step toward its
+        bot_target using BFS pathfinding.  A 25% chance grants a second step
+        (same as manual movement).  No merge prompts are shown for bot moves.
+        """
+        bots = [e for e in self.em.toplevel if e.is_bot]
+        moved_count = 0
+
+        for bot in bots:
+            if bot.id in self.canvas._moved_ids:
+                continue  # already acted this day
+
+            if bot.bot_target is None or bot.node == bot.bot_target:
+                # No target or already there — count as "waited"
+                self.canvas.mark_moved(bot.id)
+                continue
+
+            next_node = find_next_step(self.grid, bot.node, bot.bot_target)
+            if next_node is None:
+                self.canvas.mark_moved(bot.id)
+                continue
+
+            self.em.move(bot.id, next_node)
+            moved_count += 1
+
+            # 25% chance of a bonus step
+            if random.random() < 0.25:
+                bonus = find_next_step(self.grid, bot.node, bot.bot_target)
+                if bonus is not None:
+                    self.em.move(bot.id, bonus)
+
+            self.canvas.mark_moved(bot.id)
+
+        self.canvas.set_selected(None)
+        self._refresh_list()
+        self._update_day_ui()
+        self.canvas.refresh()
+
+        if moved_count:
+            self.status_bar.showMessage(
+                f"Bots moved: {moved_count}  [{self._progress_str()}]"
+            )
+        else:
+            self.status_bar.showMessage(
+                f"No bots needed to move.  [{self._progress_str()}]"
+            )
+
+        self._check_day_end()
+
+    # ------------------------------------------------------------------
     # Right-click entity editor
     # ------------------------------------------------------------------
 
@@ -921,18 +987,19 @@ class MainWindow(QMainWindow):
             self._edit_individual(entity)
 
     def _edit_individual(self, entity: Entity):
-        dlg = EditEntityDialog(entity, self)
+        dlg = EditEntityDialog(entity, self, lm=self.lm, max_node=self.grid.max_number)
         if dlg.exec():
             v = dlg.get_values()
             entity.name = v["name"]
             entity.color = v["color"]
             entity.is_bot = v["is_bot"]
+            entity.bot_target = v["bot_target"]
             self._refresh_list()
             self.canvas.refresh()
             self.status_bar.showMessage(f"'{entity.name}' updated.")
 
     def _edit_group(self, group: Entity):
-        dlg = EditGroupDialog(group, self.em, self)
+        dlg = EditGroupDialog(group, self.em, self, lm=self.lm, max_node=self.grid.max_number)
         if dlg.exec():
             if dlg.should_disband():
                 self.em.disband_group(group.id)
@@ -942,6 +1009,7 @@ class MainWindow(QMainWindow):
                 v = dlg.get_values()
                 group.name = v["name"]
                 group.is_bot = v["is_bot"]
+                group.bot_target = v["bot_target"]
                 # Apply member changes
                 new_members = set(v["members"])
                 old_members = set(group.members)

@@ -76,6 +76,7 @@ class HexMapCanvas(QGraphicsView):
         self._draw_terrain()
         self._draw_grid()
         self._draw_locations()
+        self._draw_bot_targets()
         self._draw_entities()
         self._draw_corner_handles()
 
@@ -300,6 +301,58 @@ class HexMapCanvas(QGraphicsView):
             # Centre horizontally; sit just below the diamond's bottom tip
             lbl.setPos(cx - br.width() / 2, cy + h + 2)
             lbl.setZValue(4)
+
+    # ------------------------------------------------------------------
+    # Bot target indicators  (z=4.5 — above locations, below entities)
+    # ------------------------------------------------------------------
+
+    def _draw_bot_targets(self):
+        """
+        For every bot with a bot_target draw:
+          • a dashed line from the bot's hex to the target hex
+          • a small ring + dot at the target hex
+        """
+        for entity in self.em.toplevel:
+            if not entity.is_bot:
+                continue
+            target = getattr(entity, "bot_target", None)
+            if target is None or target == entity.node:
+                continue
+
+            src_pos = self.grid.pixel_of(entity.node)
+            dst_pos = self.grid.pixel_of(target)
+            if src_pos is None or dst_pos is None:
+                continue
+
+            sx, sy = src_pos
+            tx, ty = dst_pos
+            color = QColor(entity.color)
+            color.setAlpha(160)
+
+            # Dashed line
+            line_pen = QPen(color, 1.5, Qt.PenStyle.DashLine)
+            line = self._scene.addLine(sx, sy, tx, ty, line_pen)
+            line.setZValue(4.5)
+
+            # Ring at target
+            ring_r = self.grid.size * 0.22
+            ring_pen = QPen(color, 2, Qt.PenStyle.SolidLine)
+            ring = self._scene.addEllipse(
+                QRectF(tx - ring_r, ty - ring_r, 2 * ring_r, 2 * ring_r),
+                ring_pen,
+                QBrush(Qt.BrushStyle.NoBrush),
+            )
+            ring.setZValue(4.5)
+
+            # Dot at target
+            dot_r = ring_r * 0.35
+            dot_brush = QBrush(color)
+            dot = self._scene.addEllipse(
+                QRectF(tx - dot_r, ty - dot_r, 2 * dot_r, 2 * dot_r),
+                QPen(Qt.PenStyle.NoPen),
+                dot_brush,
+            )
+            dot.setZValue(4.6)
 
     # ------------------------------------------------------------------
     # Corner-warp handles

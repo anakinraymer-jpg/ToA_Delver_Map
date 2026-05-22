@@ -1,3 +1,5 @@
+from typing import Optional
+
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
@@ -184,11 +186,14 @@ class AddEntityDialog(QDialog):
 # ---------------------------------------------------------------------------
 
 class EditEntityDialog(QDialog):
-    def __init__(self, entity, parent=None):
+    def __init__(self, entity, parent=None, *, lm=None, max_node: int = 9999):
         super().__init__(parent)
         self.setWindowTitle(f"Edit: {entity.name}")
         self._color = entity.color
-        layout = QFormLayout(self)
+        self._lm = lm
+        root = QVBoxLayout(self)
+        layout = QFormLayout()
+        root.addLayout(layout)
 
         self.name_edit = QLineEdit(entity.name)
 
@@ -209,12 +214,53 @@ class EditEntityDialog(QDialog):
         layout.addRow("Color:", color_row)
         layout.addRow("", self.is_bot)
 
+        # ── Bot Target section ────────────────────────────────────────
+        self._target_group = QGroupBox("Bot Target")
+        tg_layout = QFormLayout(self._target_group)
+
+        self._target_loc_combo = QComboBox()
+        self._target_loc_combo.addItem("— none (use node) —", None)
+        if lm:
+            for loc in lm.all:
+                self._target_loc_combo.addItem(f"{loc.name}  (node {loc.node})", loc.node)
+
+        self._target_node_spin = QSpinBox()
+        self._target_node_spin.setRange(0, max_node)
+        self._target_node_spin.setSpecialValueText("None")
+        self._target_node_spin.setToolTip("0 = no target")
+
+        # Pre-fill from entity's current bot_target
+        current_target = getattr(entity, "bot_target", None)
+        self._target_node_spin.setValue(current_target if current_target else 0)
+
+        # Try to pre-select a matching location
+        if lm and current_target:
+            for i in range(self._target_loc_combo.count()):
+                if self._target_loc_combo.itemData(i) == current_target:
+                    self._target_loc_combo.setCurrentIndex(i)
+                    break
+
+        self._target_loc_combo.currentIndexChanged.connect(self._on_loc_selected)
+
+        tg_layout.addRow("Location:", self._target_loc_combo)
+        tg_layout.addRow("Or Node:", self._target_node_spin)
+
+        self._target_group.setEnabled(entity.is_bot)
+        self.is_bot.toggled.connect(self._target_group.setEnabled)
+
+        root.addWidget(self._target_group)
+
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
         buttons.accepted.connect(self._on_accept)
         buttons.rejected.connect(self.reject)
-        layout.addRow(buttons)
+        root.addWidget(buttons)
+
+    def _on_loc_selected(self, idx: int):
+        node = self._target_loc_combo.itemData(idx)
+        if node is not None:
+            self._target_node_spin.setValue(node)
 
     def _pick_color(self):
         c = QColorDialog.getColor(QColor(self._color), self)
@@ -229,10 +275,13 @@ class EditEntityDialog(QDialog):
         self.accept()
 
     def get_values(self) -> dict:
+        raw = self._target_node_spin.value()
+        bot_target: Optional[int] = raw if (self.is_bot.isChecked() and raw > 0) else None
         return {
             "name": self.name_edit.text().strip(),
             "color": self._color,
             "is_bot": self.is_bot.isChecked(),
+            "bot_target": bot_target,
         }
 
 
@@ -247,11 +296,12 @@ class EditGroupDialog(QDialog):
     the caller only when the dialog is accepted.
     """
 
-    def __init__(self, group, em, parent=None):
+    def __init__(self, group, em, parent=None, *, lm=None, max_node: int = 9999):
         super().__init__(parent)
         self.setWindowTitle(f"Edit Group: {group.name}")
         self._group = group
         self._em = em
+        self._lm = lm
         self._disband = False
 
         # Local working copies — not applied until OK
@@ -295,6 +345,40 @@ class EditGroupDialog(QDialog):
         panels.addWidget(avail_box)
         root.addLayout(panels)
 
+        # --- Bot Target section ---
+        self._target_group = QGroupBox("Bot Target")
+        tg_layout = QFormLayout(self._target_group)
+
+        self._target_loc_combo = QComboBox()
+        self._target_loc_combo.addItem("— none (use node) —", None)
+        if lm:
+            for loc in lm.all:
+                self._target_loc_combo.addItem(f"{loc.name}  (node {loc.node})", loc.node)
+
+        self._target_node_spin = QSpinBox()
+        self._target_node_spin.setRange(0, max_node)
+        self._target_node_spin.setSpecialValueText("None")
+        self._target_node_spin.setToolTip("0 = no target")
+
+        current_target = getattr(group, "bot_target", None)
+        self._target_node_spin.setValue(current_target if current_target else 0)
+
+        if lm and current_target:
+            for i in range(self._target_loc_combo.count()):
+                if self._target_loc_combo.itemData(i) == current_target:
+                    self._target_loc_combo.setCurrentIndex(i)
+                    break
+
+        self._target_loc_combo.currentIndexChanged.connect(self._on_loc_selected)
+
+        tg_layout.addRow("Location:", self._target_loc_combo)
+        tg_layout.addRow("Or Node:", self._target_node_spin)
+
+        self._target_group.setEnabled(group.is_bot)
+        self.is_bot.toggled.connect(self._target_group.setEnabled)
+
+        root.addWidget(self._target_group)
+
         # --- Disband + OK/Cancel ---
         disband_btn = QPushButton("Disband Group")
         disband_btn.setStyleSheet("color: #e74c3c;")
@@ -311,6 +395,11 @@ class EditGroupDialog(QDialog):
         self._populate()
 
     # ------------------------------------------------------------------
+
+    def _on_loc_selected(self, idx: int):
+        node = self._target_loc_combo.itemData(idx)
+        if node is not None:
+            self._target_node_spin.setValue(node)
 
     def _populate(self):
         self.members_list.clear()
@@ -371,10 +460,13 @@ class EditGroupDialog(QDialog):
         return self._disband
 
     def get_values(self) -> dict:
+        raw = self._target_node_spin.value()
+        bot_target: Optional[int] = raw if (self.is_bot.isChecked() and raw > 0) else None
         return {
             "name": self.name_edit.text().strip() or self._group.name,
             "is_bot": self.is_bot.isChecked(),
             "members": list(self._members),        # desired final member list
+            "bot_target": bot_target,
         }
 
 

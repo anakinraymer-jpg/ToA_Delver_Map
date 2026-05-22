@@ -1,0 +1,13 @@
+{
+  "grid": {
+    "size": 37.0,
+    "origin": [
+      187.0,
+      155.0
+    ],
+    "orientation": "flat",
+    "cols": 72,
+    "rows": 86
+  },
+  "entities": []
+}

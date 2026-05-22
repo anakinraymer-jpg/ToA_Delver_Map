@@ -1,0 +1,41 @@
+{
+  "grid": {
+    "size": 37.0,
+    "origin": [
+      187.0,
+      155.0
+    ],
+    "orientation": "flat",
+    "cols": 72,
+    "rows": 86
+  },
+  "entities": [
+    {
+      "id": "7ccfb8ab-54d2-4b22-aa31-13dc9fac7ddd",
+      "name": "15",
+      "node": 100,
+      "color": "#e74c3c",
+      "is_group": false,
+      "is_bot": true,
+      "members": []
+    },
+    {
+      "id": "4891b64c-06c0-4ceb-9f6c-9b8e8b6cbdf9",
+      "name": "2",
+      "node": 100,
+      "color": "#e74c3c",
+      "is_group": false,
+      "is_bot": true,
+      "members": []
+    }
+  ],
+  "locations": [
+    {
+      "id": "a8c93434-d46d-48e1-a0c2-3d30f06fb75e",
+      "name": "Ataaz Yklwazi",
+      "node": 1857,
+      "color": "#f39c12",
+      "description": ""
+    }
+  ]
+}
