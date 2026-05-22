@@ -9,6 +9,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction, QColor
 from PyQt6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
@@ -18,6 +19,7 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSlider,
     QStatusBar,
     QToolBar,
@@ -43,6 +45,7 @@ from dialogs import (
 from entities import Entity, EntityManager
 from hex_grid import HexGrid
 from locations import Location, LocationManager
+from terrain import TERRAIN_COLORS, TERRAINS, TerrainMap
 
 
 class MainWindow(QMainWindow):
@@ -56,6 +59,7 @@ class MainWindow(QMainWindow):
         self.lm = LocationManager()
         self.day: int = 1
         self._bonus_move_entity: Optional[str] = None   # ID of entity with unused bonus move
+        self.tm = TerrainMap()
 
         self._build_ui()
         self._build_menu()
@@ -73,7 +77,7 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        self.canvas = HexMapCanvas(self.grid, self.em, self.lm)
+        self.canvas = HexMapCanvas(self.grid, self.em, self.lm, self.tm)
         self.canvas.entity_selected.connect(self._on_entity_selected)
         self.canvas.move_requested.connect(self._on_move_requested)
         self.canvas.origin_clicked.connect(self._on_origin_clicked)
@@ -90,12 +94,22 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage("Open a map image to begin  (File → Open Map Image)")
 
     def _build_panel(self) -> QWidget:
-        panel = QWidget()
-        panel.setFixedWidth(230)
-        layout = QVBoxLayout(panel)
-        layout.setContentsMargins(8, 8, 8, 8)
+        # Outer fixed-width shell with a scroll area so all sections fit
+        outer = QWidget()
+        outer.setFixedWidth(244)
+        outer_layout = QVBoxLayout(outer)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Day counter
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        inner = QWidget()
+        layout = QVBoxLayout(inner)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+
+        # ── Day counter ───────────────────────────────────────────────
         day_group = QGroupBox("Day")
         dg = QVBoxLayout(day_group)
         self.day_label = QLabel("Day 1")
@@ -114,14 +128,13 @@ class MainWindow(QMainWindow):
         dg.addWidget(self.day_progress_label)
         dg.addLayout(day_btn_row)
 
-        # Entity list
+        # ── Characters & Groups ───────────────────────────────────────
         eg = QGroupBox("Characters & Groups")
         eg_layout = QVBoxLayout(eg)
         self.entity_list = QListWidget()
-        self.entity_list.setMaximumHeight(110)
+        self.entity_list.setMaximumHeight(100)
         self.entity_list.itemClicked.connect(self._on_list_click)
         eg_layout.addWidget(self.entity_list)
-
         btn_row = QHBoxLayout()
         add_btn = QPushButton("+ Add")
         add_btn.clicked.connect(self._add_entity)
@@ -131,14 +144,13 @@ class MainWindow(QMainWindow):
         btn_row.addWidget(rm_btn)
         eg_layout.addLayout(btn_row)
 
-        # Location list
+        # ── Locations ─────────────────────────────────────────────────
         lg = QGroupBox("Locations")
         lg_layout = QVBoxLayout(lg)
         self.location_list = QListWidget()
-        self.location_list.setMaximumHeight(110)
+        self.location_list.setMaximumHeight(100)
         self.location_list.itemClicked.connect(self._on_location_list_click)
         lg_layout.addWidget(self.location_list)
-
         loc_btn_row = QHBoxLayout()
         add_loc_btn = QPushButton("+ Add")
         add_loc_btn.clicked.connect(self._add_location)
@@ -151,18 +163,72 @@ class MainWindow(QMainWindow):
         loc_btn_row.addWidget(rm_loc_btn)
         lg_layout.addLayout(loc_btn_row)
 
-        # Info box
+        # ── Terrain Paint ─────────────────────────────────────────────
+        tg = QGroupBox("Terrain Paint")
+        tg_layout = QVBoxLayout(tg)
+
+        # Row 1: combo + swatch + paint toggle
+        terrain_row = QHBoxLayout()
+        self.terrain_combo = QComboBox()
+        self.terrain_combo.addItems(TERRAINS)
+        self.terrain_combo.currentTextChanged.connect(self._on_terrain_type_changed)
+
+        self.terrain_swatch = QLabel()
+        self.terrain_swatch.setFixedSize(22, 22)
+
+        self.terrain_paint_btn = QPushButton("Paint  [P]")
+        self.terrain_paint_btn.setCheckable(True)
+        self.terrain_paint_btn.setShortcut("P")
+        self.terrain_paint_btn.toggled.connect(self._on_terrain_paint_toggled)
+
+        terrain_row.addWidget(self.terrain_combo, 1)
+        terrain_row.addWidget(self.terrain_swatch)
+        terrain_row.addWidget(self.terrain_paint_btn)
+        tg_layout.addLayout(terrain_row)
+
+        # Row 2: clear-hex button
+        clear_terrain_btn = QPushButton("Clear This Hex  [Del]")
+        clear_terrain_btn.setShortcut("Del")
+        clear_terrain_btn.setToolTip(
+            "Remove terrain from the hex under the cursor\n"
+            "(or right-click any hex while Paint is on)"
+        )
+        clear_terrain_btn.clicked.connect(self._clear_selected_terrain)
+        tg_layout.addWidget(clear_terrain_btn)
+
+        # Colour legend
+        legend_layout = QVBoxLayout()
+        legend_layout.setSpacing(1)
+        for name in TERRAINS:
+            row = QHBoxLayout()
+            swatch = QLabel()
+            swatch.setFixedSize(14, 14)
+            swatch.setStyleSheet(
+                f"background:{TERRAIN_COLORS[name]};border:1px solid #555;"
+            )
+            lbl = QLabel(name)
+            lbl.setStyleSheet("font-size: 9pt;")
+            row.addWidget(swatch)
+            row.addWidget(lbl)
+            row.addStretch()
+            legend_layout.addLayout(row)
+        tg_layout.addLayout(legend_layout)
+
+        # Initialise swatch to the first terrain
+        self._on_terrain_type_changed(TERRAINS[0])
+
+        # ── Selected info ─────────────────────────────────────────────
         ig = QGroupBox("Selected")
         il = QVBoxLayout(ig)
         self.info_label = QLabel("None")
         self.info_label.setWordWrap(True)
         il.addWidget(self.info_label)
 
-        # Teleport toggle
+        # ── Teleport toggle ───────────────────────────────────────────
         self.teleport_check = QCheckBox("Teleport Mode")
         self.teleport_check.stateChanged.connect(self._toggle_teleport)
 
-        # Grid opacity
+        # ── Grid opacity ──────────────────────────────────────────────
         opacity_group = QGroupBox("Grid Overlay")
         og = QVBoxLayout(opacity_group)
         self.opacity_label = QLabel("Opacity: 71%")
@@ -174,22 +240,27 @@ class MainWindow(QMainWindow):
         og.addWidget(self.opacity_slider)
 
         hint = QLabel(
-            "<small>Left-click entity to select.<br>"
-            "Left-click target to move.<br>"
-            "Right-click to deselect.<br>"
-            "Middle-drag to pan.  Scroll to zoom.</small>"
+            "<small>Left-click entity to select / move.<br>"
+            "Right-click entity to edit.<br>"
+            "Paint mode: left=paint, right=erase.<br>"
+            "Middle-drag to pan.  Scroll to zoom.<br>"
+            "W = Wait.  P = Paint mode.  Del = Clear terrain.</small>"
         )
         hint.setWordWrap(True)
 
         layout.addWidget(day_group)
         layout.addWidget(eg)
         layout.addWidget(lg)
+        layout.addWidget(tg)
         layout.addWidget(ig)
         layout.addWidget(self.teleport_check)
         layout.addWidget(opacity_group)
         layout.addWidget(hint)
         layout.addStretch()
-        return panel
+
+        scroll.setWidget(inner)
+        outer_layout.addWidget(scroll)
+        return outer
 
     def _build_menu(self):
         menu = self.menuBar()
@@ -383,6 +454,43 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage("Teleport mode " + ("ON" if enabled else "OFF") + ".")
 
     # ------------------------------------------------------------------
+    # Terrain actions
+    # ------------------------------------------------------------------
+
+    def _on_terrain_type_changed(self, name: str):
+        color = TERRAIN_COLORS.get(name, "#ffffff")
+        self.terrain_swatch.setStyleSheet(
+            f"background:{color};border:1px solid #888;"
+        )
+        if self.terrain_paint_btn.isChecked():
+            self.canvas.set_terrain_paint(True, name)
+
+    def _on_terrain_paint_toggled(self, enabled: bool):
+        terrain = self.terrain_combo.currentText()
+        self.canvas.set_terrain_paint(enabled, terrain)
+        if enabled:
+            self.status_bar.showMessage(
+                f"Terrain Paint: {terrain} — left-click/drag to paint, "
+                f"right-click/drag to erase.  P to exit."
+            )
+        else:
+            self.status_bar.showMessage("Terrain Paint: OFF")
+
+    def _clear_selected_terrain(self):
+        """Clear terrain from the hex the selected entity or location is on,
+        or from the canvas mouse-hover position (rough fallback)."""
+        # Prefer the currently selected entity's node
+        sel = self.canvas._selected_entity
+        if sel:
+            self.tm.clear(sel.node)
+            self.canvas.refresh()
+            self.status_bar.showMessage(f"Terrain cleared at node {sel.node}.")
+            return
+        self.status_bar.showMessage(
+            "Select an entity or use right-click in Paint mode to erase terrain."
+        )
+
+    # ------------------------------------------------------------------
     # Location actions
     # ------------------------------------------------------------------
 
@@ -488,6 +596,7 @@ class MainWindow(QMainWindow):
                 for e in self.em.all
             ],
             "locations": self.lm.to_list(),
+            "terrain": self.tm.to_dict(),
         }
         with open(path, "w") as f:
             json.dump(data, f, indent=2)
@@ -535,6 +644,10 @@ class MainWindow(QMainWindow):
                         id=ld["id"],
                     )
                 )
+            # Restore terrain (mutate in-place so canvas ref stays valid)
+            self.tm.clear_all()
+            for k, v in TerrainMap.from_dict(data.get("terrain", {}))._data.items():
+                self.tm.set(k, v)
             self.day = data.get("day", 1)
             self.canvas.clear_moved()
             self._bonus_move_entity = None

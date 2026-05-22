@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import QGraphicsScene, QGraphicsView
 from entities import Entity, EntityManager
 from hex_grid import HexGrid
 from locations import LocationManager
+from terrain import TERRAIN_ABBR, TERRAIN_ALPHA, TERRAIN_COLORS, TerrainMap
 
 
 class HexMapCanvas(QGraphicsView):
@@ -17,11 +18,12 @@ class HexMapCanvas(QGraphicsView):
     origin_clicked = pyqtSignal(float, float)   # x, y scene coords
     right_clicked_entity = pyqtSignal(object)   # Entity (for edit dialog)
 
-    def __init__(self, grid: HexGrid, em: EntityManager, lm: LocationManager):
+    def __init__(self, grid: HexGrid, em: EntityManager, lm: LocationManager, tm: TerrainMap):
         super().__init__()
         self.grid = grid
         self.em = em
         self.lm = lm
+        self.tm = tm
         self.teleport_enabled = False
         self._selected_entity: Optional[Entity] = None
         self._valid_targets: set[int] = set()
@@ -47,6 +49,13 @@ class HexMapCanvas(QGraphicsView):
         # Day-turn tracking
         self._moved_ids: set[str] = set()   # entity IDs that have fully acted today
 
+        # Terrain paint state
+        self._terrain_paint_mode: bool = False
+        self._terrain_paint_type: str = "Jungle"
+        self._terrain_dragging: bool = False       # left/right drag in progress
+        self._terrain_drag_erase: bool = False     # True = erasing, False = painting
+        self._terrain_last_node: Optional[int] = None   # avoid repainting same hex
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -64,6 +73,7 @@ class HexMapCanvas(QGraphicsView):
     def refresh(self):
         self._scene.clear()
         self._draw_background()
+        self._draw_terrain()
         self._draw_grid()
         self._draw_locations()
         self._draw_entities()
@@ -101,6 +111,14 @@ class HexMapCanvas(QGraphicsView):
 
     def set_origin_click_mode(self, enabled: bool):
         self._origin_click_mode = enabled
+        if not self._terrain_paint_mode:
+            self.setCursor(
+                Qt.CursorShape.CrossCursor if enabled else Qt.CursorShape.ArrowCursor
+            )
+
+    def set_terrain_paint(self, enabled: bool, terrain: str = "Jungle"):
+        self._terrain_paint_mode = enabled
+        self._terrain_paint_type = terrain
         self.setCursor(
             Qt.CursorShape.CrossCursor if enabled else Qt.CursorShape.ArrowCursor
         )
@@ -216,6 +234,39 @@ class HexMapCanvas(QGraphicsView):
                 chk.setZValue(7)
 
     # ------------------------------------------------------------------
+    # Terrain fills  (z=0.5 fill, z=0.8 abbreviation label)
+    # ------------------------------------------------------------------
+
+    def _draw_terrain(self):
+        abbr_font = QFont()
+        abbr_font.setPointSize(max(5, int(self.grid.size * 0.16)))
+        abbr_font.setBold(True)
+
+        for cell in self.grid.all_cells:
+            t = self.tm.get(cell.number)
+            if t is None:
+                continue
+
+            # Filled polygon
+            corners = self.grid.corners(cell.q, cell.r)
+            poly = QPolygonF([QPointF(x, y) for x, y in corners])
+            fill = QColor(TERRAIN_COLORS[t])
+            fill.setAlpha(TERRAIN_ALPHA[t])
+            self._scene.addPolygon(
+                poly, QPen(Qt.PenStyle.NoPen), QBrush(fill)
+            ).setZValue(0.5)
+
+            # Subtle abbreviation at the top of the hex
+            cx, cy = self.grid.hex_to_pixel(cell.q, cell.r)
+            lbl = self._scene.addText(TERRAIN_ABBR[t], abbr_font)
+            lbl_color = QColor(255, 255, 255, 130)
+            lbl.setDefaultTextColor(lbl_color)
+            br = lbl.boundingRect()
+            lbl.setPos(cx - br.width() / 2,
+                       cy - self.grid.size * 0.48)
+            lbl.setZValue(0.8)
+
+    # ------------------------------------------------------------------
     # Location markers  (z=3 diamonds, z=4 name labels)
     # ------------------------------------------------------------------
 
@@ -292,10 +343,38 @@ class HexMapCanvas(QGraphicsView):
     # Input handling
     # ------------------------------------------------------------------
 
+    def _terrain_paint_at(self, sp, erase: bool):
+        """Apply or erase terrain at the scene point sp."""
+        coord = self.grid.pixel_to_nearest(sp.x(), sp.y())
+        if coord is None:
+            return None
+        cell = self.grid.cell(*coord)
+        if cell is None:
+            return None
+        if erase:
+            self.tm.clear(cell.number)
+        else:
+            self.tm.set(cell.number, self._terrain_paint_type)
+        return cell.number
+
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.MiddleButton:
             self._pan_start = event.pos()
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            return
+
+        # Terrain paint mode — intercepts left and right clicks
+        if self._terrain_paint_mode and event.button() in (
+            Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton
+        ):
+            erase = event.button() == Qt.MouseButton.RightButton
+            sp = self.mapToScene(event.pos())
+            node = self._terrain_paint_at(sp, erase)
+            if node is not None:
+                self._terrain_dragging = True
+                self._terrain_drag_erase = erase
+                self._terrain_last_node = node
+                self.refresh()
             return
 
         # Origin-click calibration mode: any left-click sets the origin
@@ -351,6 +430,21 @@ class HexMapCanvas(QGraphicsView):
                     self.set_selected(here[0])
 
     def mouseMoveEvent(self, event):
+        # Terrain drag-paint
+        if self._terrain_dragging:
+            sp = self.mapToScene(event.pos())
+            coord = self.grid.pixel_to_nearest(sp.x(), sp.y())
+            if coord:
+                cell = self.grid.cell(*coord)
+                if cell and cell.number != self._terrain_last_node:
+                    self._terrain_last_node = cell.number
+                    if self._terrain_drag_erase:
+                        self.tm.clear(cell.number)
+                    else:
+                        self.tm.set(cell.number, self._terrain_paint_type)
+                    self.refresh()
+            return
+
         # Corner drag
         if self._dragging_corner >= 0 and self._corner_drag_start_scene is not None:
             sp = self.mapToScene(event.pos())
@@ -375,6 +469,13 @@ class HexMapCanvas(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        if self._terrain_dragging and event.button() in (
+            Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton
+        ):
+            self._terrain_dragging = False
+            self._terrain_last_node = None
+            return
+
         if event.button() == Qt.MouseButton.LeftButton and self._dragging_corner >= 0:
             self._dragging_corner = -1
             self._corner_drag_start_scene = None
