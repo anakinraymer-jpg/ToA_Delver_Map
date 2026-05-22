@@ -8,12 +8,16 @@ from PyQt6.QtWidgets import (
     QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QPlainTextEdit,
     QPushButton,
     QSpinBox,
+    QVBoxLayout,
 )
 
 
@@ -128,6 +132,7 @@ class AddEntityDialog(QDialog):
         self.node_spin.setRange(1, max_node)
 
         self.is_group = QCheckBox("This is a group")
+        self.is_bot = QCheckBox("This is a bot")
 
         color_row = QHBoxLayout()
         self._preview = QLabel()
@@ -143,6 +148,7 @@ class AddEntityDialog(QDialog):
         layout.addRow("Starting Node:", self.node_spin)
         layout.addRow("Color:", color_row)
         layout.addRow("", self.is_group)
+        layout.addRow("", self.is_bot)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -169,6 +175,206 @@ class AddEntityDialog(QDialog):
             "node": self.node_spin.value(),
             "color": self._color,
             "is_group": self.is_group.isChecked(),
+            "is_bot": self.is_bot.isChecked(),
+        }
+
+
+# ---------------------------------------------------------------------------
+# Edit individual entity (name / color / bot flag)
+# ---------------------------------------------------------------------------
+
+class EditEntityDialog(QDialog):
+    def __init__(self, entity, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Edit: {entity.name}")
+        self._color = entity.color
+        layout = QFormLayout(self)
+
+        self.name_edit = QLineEdit(entity.name)
+
+        color_row = QHBoxLayout()
+        self._preview = QLabel()
+        self._preview.setFixedSize(24, 24)
+        self._preview.setStyleSheet(f"background:{self._color};border:1px solid #888;")
+        pick_btn = QPushButton("Pick Color")
+        pick_btn.clicked.connect(self._pick_color)
+        color_row.addWidget(self._preview)
+        color_row.addWidget(pick_btn)
+        color_row.addStretch()
+
+        self.is_bot = QCheckBox("This is a bot")
+        self.is_bot.setChecked(entity.is_bot)
+
+        layout.addRow("Name:", self.name_edit)
+        layout.addRow("Color:", color_row)
+        layout.addRow("", self.is_bot)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._on_accept)
+        buttons.rejected.connect(self.reject)
+        layout.addRow(buttons)
+
+    def _pick_color(self):
+        c = QColorDialog.getColor(QColor(self._color), self)
+        if c.isValid():
+            self._color = c.name()
+            self._preview.setStyleSheet(f"background:{self._color};border:1px solid #888;")
+
+    def _on_accept(self):
+        if not self.name_edit.text().strip():
+            self.name_edit.setFocus()
+            return
+        self.accept()
+
+    def get_values(self) -> dict:
+        return {
+            "name": self.name_edit.text().strip(),
+            "color": self._color,
+            "is_bot": self.is_bot.isChecked(),
+        }
+
+
+# ---------------------------------------------------------------------------
+# Edit group — name / bot flag / member management
+# ---------------------------------------------------------------------------
+
+class EditGroupDialog(QDialog):
+    """
+    Lets the user rename the group, toggle bot, and move entities on the same
+    hex into or out of the group.  Changes are staged locally and applied by
+    the caller only when the dialog is accepted.
+    """
+
+    def __init__(self, group, em, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Edit Group: {group.name}")
+        self._group = group
+        self._em = em
+        self._disband = False
+
+        # Local working copies — not applied until OK
+        self._members: list[str] = list(group.members)
+        # Available = top-level entities at the group's node (not the group itself)
+        self._available: list[str] = [
+            e.id for e in em.at_node(group.node) if e.id != group.id
+        ]
+
+        root = QVBoxLayout(self)
+
+        # --- Header row: name + bot ---
+        hdr = QFormLayout()
+        self.name_edit = QLineEdit(group.name)
+        self.is_bot = QCheckBox("Bot group")
+        self.is_bot.setChecked(group.is_bot)
+        hdr.addRow("Group Name:", self.name_edit)
+        hdr.addRow("", self.is_bot)
+        root.addLayout(hdr)
+
+        # --- Dual-pane member editor ---
+        panels = QHBoxLayout()
+
+        members_box = QGroupBox("Group Members")
+        ml = QVBoxLayout(members_box)
+        self.members_list = QListWidget()
+        ml.addWidget(self.members_list)
+        remove_btn = QPushButton("Remove from Group →")
+        remove_btn.clicked.connect(self._remove_member)
+        ml.addWidget(remove_btn)
+
+        avail_box = QGroupBox("On Same Hex")
+        al = QVBoxLayout(avail_box)
+        self.avail_list = QListWidget()
+        al.addWidget(self.avail_list)
+        add_btn = QPushButton("← Add to Group")
+        add_btn.clicked.connect(self._add_member)
+        al.addWidget(add_btn)
+
+        panels.addWidget(members_box)
+        panels.addWidget(avail_box)
+        root.addLayout(panels)
+
+        # --- Disband + OK/Cancel ---
+        disband_btn = QPushButton("Disband Group")
+        disband_btn.setStyleSheet("color: #e74c3c;")
+        disband_btn.clicked.connect(self._on_disband)
+        root.addWidget(disband_btn)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        root.addWidget(btns)
+
+        self._populate()
+
+    # ------------------------------------------------------------------
+
+    def _populate(self):
+        self.members_list.clear()
+        self.avail_list.clear()
+        for eid in self._members:
+            e = self._em.get(eid)
+            if e:
+                self._add_row(self.members_list, e)
+        for eid in self._available:
+            e = self._em.get(eid)
+            if e:
+                self._add_row(self.avail_list, e)
+
+    @staticmethod
+    def _add_row(lst: QListWidget, entity):
+        flags = []
+        if entity.is_bot:
+            flags.append("BOT")
+        if entity.is_group:
+            flags.append("GRP")
+        tag = f"[{'/'.join(flags)}] " if flags else ""
+        item = QListWidgetItem(f"{tag}{entity.name}")
+        item.setData(Qt.ItemDataRole.UserRole, entity.id)
+        item.setForeground(QColor(entity.color))
+        lst.addItem(item)
+
+    def _add_member(self):
+        item = self.avail_list.currentItem()
+        if not item:
+            return
+        eid = item.data(Qt.ItemDataRole.UserRole)
+        if eid in self._available:
+            self._available.remove(eid)
+        if eid not in self._members:
+            self._members.append(eid)
+        self._populate()
+
+    def _remove_member(self):
+        item = self.members_list.currentItem()
+        if not item:
+            return
+        eid = item.data(Qt.ItemDataRole.UserRole)
+        if eid in self._members:
+            self._members.remove(eid)
+        if eid not in self._available:
+            self._available.append(eid)
+        self._populate()
+
+    def _on_disband(self):
+        self._disband = True
+        self.accept()
+
+    # ------------------------------------------------------------------
+    # Results
+    # ------------------------------------------------------------------
+
+    def should_disband(self) -> bool:
+        return self._disband
+
+    def get_values(self) -> dict:
+        return {
+            "name": self.name_edit.text().strip() or self._group.name,
+            "is_bot": self.is_bot.isChecked(),
+            "members": list(self._members),        # desired final member list
         }
 
 

@@ -29,8 +29,16 @@ from PyQt6.QtWidgets import (
 CHULT_GRID = dict(size=87.0, origin=(150.0, 138.0), orientation="flat", cols=33, rows=39)
 CHULT_MAP_FILE = "chult_map.png"
 
+from PyQt6.QtWidgets import QInputDialog
+
 from canvas import HexMapCanvas
-from dialogs import AddEntityDialog, AddLocationDialog, GridSettingsDialog
+from dialogs import (
+    AddEntityDialog,
+    AddLocationDialog,
+    EditEntityDialog,
+    EditGroupDialog,
+    GridSettingsDialog,
+)
 from entities import Entity, EntityManager
 from hex_grid import HexGrid
 from locations import Location, LocationManager
@@ -66,6 +74,7 @@ class MainWindow(QMainWindow):
         self.canvas.entity_selected.connect(self._on_entity_selected)
         self.canvas.move_requested.connect(self._on_move_requested)
         self.canvas.origin_clicked.connect(self._on_origin_clicked)
+        self.canvas.right_clicked_entity.connect(self._on_right_click_entity)
         self._grid_dlg = None  # holds open GridSettingsDialog for live updates
 
         panel = self._build_panel()
@@ -310,7 +319,10 @@ class MainWindow(QMainWindow):
         dlg = AddEntityDialog(self.grid.max_number, self)
         if dlg.exec():
             v = dlg.get_values()
-            e = Entity(name=v["name"], node=v["node"], color=v["color"], is_group=v["is_group"])
+            e = Entity(
+                name=v["name"], node=v["node"], color=v["color"],
+                is_group=v["is_group"], is_bot=v["is_bot"],
+            )
             self.em.add(e)
             self._refresh_list()
             self.canvas.refresh()
@@ -323,7 +335,12 @@ class MainWindow(QMainWindow):
         sel = self.canvas._selected_entity
         if sel and sel.id == eid:
             self.canvas.set_selected(None)
-        self.em.remove(eid)
+        # If it's a group, disband cleanly so members are freed
+        entity = self.em.get(eid)
+        if entity and entity.is_group:
+            self.em.disband_group(eid)
+        else:
+            self.em.remove(eid)
         self._refresh_list()
         self.canvas.refresh()
 
@@ -431,6 +448,8 @@ class MainWindow(QMainWindow):
                     "node": e.node,
                     "color": e.color,
                     "is_group": e.is_group,
+                    "is_bot": e.is_bot,
+                    "members": list(e.members),
                 }
                 for e in self.em.all
             ],
@@ -463,7 +482,9 @@ class MainWindow(QMainWindow):
                         name=ed["name"],
                         node=ed["node"],
                         color=ed["color"],
-                        is_group=ed["is_group"],
+                        is_group=ed.get("is_group", False),
+                        is_bot=ed.get("is_bot", False),
+                        members=list(ed.get("members", [])),
                         id=ed["id"],
                     )
                 )
@@ -495,9 +516,15 @@ class MainWindow(QMainWindow):
 
     def _refresh_list(self):
         self.entity_list.clear()
-        for e in self.em.all:
-            prefix = "[G] " if e.is_group else ""
-            item = QListWidgetItem(f"{prefix}{e.name}  → {e.node}")
+        for e in self.em.toplevel:
+            tags = []
+            if e.is_group:
+                tags.append("G")
+            if e.is_bot:
+                tags.append("B")
+            prefix = f"[{'|'.join(tags)}] " if tags else ""
+            cnt = f"  ({len(e.members)} mbr)" if e.is_group and e.members else ""
+            item = QListWidgetItem(f"{prefix}{e.name}{cnt}  → {e.node}")
             item.setData(Qt.ItemDataRole.UserRole, e.id)
             item.setForeground(QColor(e.color))
             self.entity_list.addItem(item)
@@ -513,8 +540,20 @@ class MainWindow(QMainWindow):
     def _on_entity_selected(self, entity: Optional[Entity]):
         self._refresh_list()
         if entity:
-            kind = "Group" if entity.is_group else "Character"
-            self.info_label.setText(f"{kind}: {entity.name}\nNode: {entity.node}")
+            if entity.is_group:
+                mbr_names = ", ".join(
+                    self.em.get(mid).name
+                    for mid in entity.members
+                    if self.em.get(mid)
+                )
+                kind_line = f"Group ({len(entity.members)} members)"
+                mbr_line = f"\nMembers: {mbr_names}" if mbr_names else ""
+            else:
+                kind_line = "Bot" if entity.is_bot else "Character"
+                mbr_line = ""
+            self.info_label.setText(
+                f"{kind_line}: {entity.name}\nNode: {entity.node}{mbr_line}"
+            )
             for i in range(self.entity_list.count()):
                 item = self.entity_list.item(i)
                 if item.data(Qt.ItemDataRole.UserRole) == entity.id:
@@ -527,3 +566,119 @@ class MainWindow(QMainWindow):
         self.em.move(entity.id, target_node)
         self.canvas.set_selected(entity)
         self.status_bar.showMessage(f"'{entity.name}' moved to node {target_node}.")
+        self._check_merge_opportunity(target_node, entity)
+
+    # ------------------------------------------------------------------
+    # Merge / join logic
+    # ------------------------------------------------------------------
+
+    def _check_merge_opportunity(self, node: int, moved: Entity):
+        """
+        After a move, if multiple top-level entities share the same hex,
+        offer to merge them into a group or join an existing one.
+        """
+        at_node = self.em.at_node(node)
+        others = [e for e in at_node if e.id != moved.id]
+        if not others:
+            return
+
+        groups_there = [e for e in others if e.is_group]
+        indivs_there = [e for e in others if not e.is_group]
+
+        if groups_there and not moved.is_group:
+            # Moved entity landed on a hex that already has a group
+            group = groups_there[0]
+            ans = QMessageBox.question(
+                self,
+                "Join Group?",
+                f"<b>{moved.name}</b> is now on the same hex as group "
+                f"<b>{group.name}</b>.<br>Add {moved.name} to the group?",
+            )
+            if ans == QMessageBox.StandardButton.Yes:
+                self.em.add_to_group(group.id, moved.id)
+                self.canvas.set_selected(group)
+
+        elif moved.is_group and indivs_there:
+            # A group moved onto a hex that has loose entities
+            names = ", ".join(e.name for e in indivs_there)
+            ans = QMessageBox.question(
+                self,
+                "Add to Group?",
+                f"<b>{names}</b> {'are' if len(indivs_there) > 1 else 'is'} on the same "
+                f"hex as group <b>{moved.name}</b>.<br>"
+                f"Add {'them' if len(indivs_there) > 1 else 'them'} to the group?",
+            )
+            if ans == QMessageBox.StandardButton.Yes:
+                for e in indivs_there:
+                    self.em.add_to_group(moved.id, e.id)
+                self.canvas.set_selected(moved)
+
+        elif not moved.is_group and indivs_there:
+            # Two or more individuals share a hex — offer to form a group
+            all_here = [moved] + indivs_there
+            names = " & ".join(e.name for e in all_here)
+            ans = QMessageBox.question(
+                self,
+                "Merge Into Group?",
+                f"Multiple characters are now on hex {node}:<br>"
+                f"<b>{names}</b><br><br>Merge them into a group?",
+            )
+            if ans == QMessageBox.StandardButton.Yes:
+                default_name = " & ".join(e.name.split()[0] for e in all_here)
+                group_name, ok = QInputDialog.getText(
+                    self, "Group Name", "Name the new group:", text=default_name
+                )
+                if ok and group_name.strip():
+                    new_group = self.em.merge_into_group(
+                        [e.id for e in all_here],
+                        group_name.strip(),
+                        moved.color,
+                    )
+                    self.canvas.set_selected(new_group)
+
+        self._refresh_list()
+        self.canvas.refresh()
+
+    # ------------------------------------------------------------------
+    # Right-click entity editor
+    # ------------------------------------------------------------------
+
+    def _on_right_click_entity(self, entity: Entity):
+        if entity.is_group:
+            self._edit_group(entity)
+        else:
+            self._edit_individual(entity)
+
+    def _edit_individual(self, entity: Entity):
+        dlg = EditEntityDialog(entity, self)
+        if dlg.exec():
+            v = dlg.get_values()
+            entity.name = v["name"]
+            entity.color = v["color"]
+            entity.is_bot = v["is_bot"]
+            self._refresh_list()
+            self.canvas.refresh()
+            self.status_bar.showMessage(f"'{entity.name}' updated.")
+
+    def _edit_group(self, group: Entity):
+        dlg = EditGroupDialog(group, self.em, self)
+        if dlg.exec():
+            if dlg.should_disband():
+                self.em.disband_group(group.id)
+                self.canvas.set_selected(None)
+                self.status_bar.showMessage(f"Group '{group.name}' disbanded.")
+            else:
+                v = dlg.get_values()
+                group.name = v["name"]
+                group.is_bot = v["is_bot"]
+                # Apply member changes
+                new_members = set(v["members"])
+                old_members = set(group.members)
+                for eid in old_members - new_members:
+                    self.em.remove_from_group(group.id, eid)
+                for eid in new_members - old_members:
+                    self.em.add_to_group(group.id, eid)
+                self.canvas.set_selected(group)
+                self.status_bar.showMessage(f"Group '{group.name}' updated.")
+        self._refresh_list()
+        self.canvas.refresh()

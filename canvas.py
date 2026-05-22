@@ -15,6 +15,7 @@ class HexMapCanvas(QGraphicsView):
     entity_selected = pyqtSignal(object)        # Entity | None
     move_requested = pyqtSignal(object, int)    # entity, target_node
     origin_clicked = pyqtSignal(float, float)   # x, y scene coords
+    right_clicked_entity = pyqtSignal(object)   # Entity (for edit dialog)
 
     def __init__(self, grid: HexGrid, em: EntityManager, lm: LocationManager):
         super().__init__()
@@ -148,7 +149,7 @@ class HexMapCanvas(QGraphicsView):
         font.setPointSize(max(7, int(self.grid.size * 0.28)))
         font.setBold(True)
 
-        for entity in self.em.all:
+        for entity in self.em.toplevel:   # skip group members
             pos = self.grid.pixel_of(entity.node)
             if pos is None:
                 continue
@@ -156,7 +157,17 @@ class HexMapCanvas(QGraphicsView):
             r = self.grid.size * 0.38
             is_sel = self._selected_entity and entity.id == self._selected_entity.id
 
-            pen = QPen(QColor("yellow") if is_sel else QColor("white"), 2 if not is_sel else 3)
+            if is_sel:
+                pen_color, pen_w = QColor("yellow"), 3
+            elif entity.is_bot:
+                pen_color, pen_w = QColor(160, 160, 160), 2
+            else:
+                pen_color, pen_w = QColor("white"), 2
+
+            pen = QPen(pen_color, pen_w)
+            if entity.is_bot:
+                pen.setStyle(Qt.PenStyle.DashLine)
+
             circle = self._scene.addEllipse(
                 QRectF(cx - r, cy - r, 2 * r, 2 * r),
                 pen,
@@ -272,6 +283,15 @@ class HexMapCanvas(QGraphicsView):
                 return
 
         if event.button() == Qt.MouseButton.RightButton:
+            sp = self.mapToScene(event.pos())
+            coord = self.grid.pixel_to_nearest(sp.x(), sp.y())
+            if coord:
+                cell = self.grid.cell(*coord)
+                if cell:
+                    here = self.em.at_node(cell.number)
+                    if here:
+                        self.right_clicked_entity.emit(here[0])
+                        return
             self.set_selected(None)
             return
 
