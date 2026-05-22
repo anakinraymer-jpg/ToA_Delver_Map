@@ -97,7 +97,7 @@ class MainWindow(QMainWindow):
     def _build_panel(self) -> QWidget:
         # Outer fixed-width shell with a scroll area so all sections fit
         outer = QWidget()
-        outer.setFixedWidth(244)
+        outer.setFixedWidth(272)
         outer_layout = QVBoxLayout(outer)
         outer_layout.setContentsMargins(0, 0, 0, 0)
 
@@ -108,7 +108,7 @@ class MainWindow(QMainWindow):
         inner = QWidget()
         layout = QVBoxLayout(inner)
         layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(6)
+        layout.setSpacing(8)
 
         # ── Day counter ───────────────────────────────────────────────
         day_group = QGroupBox("Day")
@@ -137,15 +137,22 @@ class MainWindow(QMainWindow):
         eg = QGroupBox("Characters & Groups")
         eg_layout = QVBoxLayout(eg)
         self.entity_list = QListWidget()
-        self.entity_list.setMaximumHeight(100)
+        self.entity_list.setMaximumHeight(130)
+        self.entity_list.setWordWrap(True)
         self.entity_list.itemClicked.connect(self._on_list_click)
         eg_layout.addWidget(self.entity_list)
         btn_row = QHBoxLayout()
         add_btn = QPushButton("+ Add")
         add_btn.clicked.connect(self._add_entity)
+        edit_entity_btn = QPushButton("Edit")
+        edit_entity_btn.setToolTip(
+            "Edit selected character/group: name, color, notes, bot target"
+        )
+        edit_entity_btn.clicked.connect(self._edit_selected_entity)
         rm_btn = QPushButton("Remove")
         rm_btn.clicked.connect(self._remove_selected_entity)
         btn_row.addWidget(add_btn)
+        btn_row.addWidget(edit_entity_btn)
         btn_row.addWidget(rm_btn)
         eg_layout.addLayout(btn_row)
 
@@ -153,7 +160,8 @@ class MainWindow(QMainWindow):
         lg = QGroupBox("Locations")
         lg_layout = QVBoxLayout(lg)
         self.location_list = QListWidget()
-        self.location_list.setMaximumHeight(100)
+        self.location_list.setMaximumHeight(115)
+        self.location_list.setWordWrap(True)
         self.location_list.itemClicked.connect(self._on_location_list_click)
         lg_layout.addWidget(self.location_list)
         loc_btn_row = QHBoxLayout()
@@ -227,6 +235,11 @@ class MainWindow(QMainWindow):
         il = QVBoxLayout(ig)
         self.info_label = QLabel("None")
         self.info_label.setWordWrap(True)
+        self.info_label.setMinimumHeight(88)
+        self.info_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        self.info_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
         il.addWidget(self.info_label)
 
         # ── Teleport toggle ───────────────────────────────────────────
@@ -245,14 +258,16 @@ class MainWindow(QMainWindow):
         og.addWidget(self.opacity_slider)
 
         hint = QLabel(
-            "<small>Left-click entity to select / move.<br>"
-            "Right-click entity to edit.<br>"
-            "Paint: click/drag · Shift+click = fill.<br>"
-            "Right-click = erase · Shift+right = flood erase.<br>"
-            "Middle-drag to pan.  Scroll to zoom.<br>"
-            "W = Wait · P = Paint · Del = Clear terrain.</small>"
+            "<small>"
+            "<b>Map:</b> left-click to select/move · right-click to edit<br>"
+            "<b>Pan/Zoom:</b> middle-drag · scroll wheel<br>"
+            "<b>Paint:</b> click/drag to paint · Shift+click to flood-fill<br>"
+            "Right-click to erase · Shift+right-click to flood-erase<br>"
+            "<b>Keys:</b> W = Wait · P = Paint · Del = Clear terrain hex"
+            "</small>"
         )
         hint.setWordWrap(True)
+        hint.setStyleSheet("color: #999;")
 
         layout.addWidget(day_group)
         layout.addWidget(eg)
@@ -459,6 +474,17 @@ class MainWindow(QMainWindow):
         self._update_day_ui()
         self.canvas.refresh()
 
+    def _edit_selected_entity(self):
+        """Edit button in the Characters & Groups panel — opens the edit dialog."""
+        item = self.entity_list.currentItem()
+        if not item:
+            self.status_bar.showMessage("Select a character or group first.")
+            return
+        eid = item.data(Qt.ItemDataRole.UserRole)
+        entity = self.em.get(eid)
+        if entity:
+            self._on_right_click_entity(entity)
+
     def _toggle_teleport(self, state):
         enabled = bool(state)
         self.canvas.set_teleport(enabled)
@@ -605,6 +631,7 @@ class MainWindow(QMainWindow):
                     "is_bot": e.is_bot,
                     "members": list(e.members),
                     "bot_target": e.bot_target,
+                    "flavor_text": e.flavor_text,
                 }
                 for e in self.em.all
             ],
@@ -642,6 +669,7 @@ class MainWindow(QMainWindow):
                         is_bot=ed.get("is_bot", False),
                         members=list(ed.get("members", [])),
                         bot_target=ed.get("bot_target"),
+                        flavor_text=ed.get("flavor_text", ""),
                         id=ed["id"],
                     )
                 )
@@ -722,8 +750,24 @@ class MainWindow(QMainWindow):
             else:
                 kind_line = "Bot" if entity.is_bot else "Character"
                 mbr_line = ""
+
+            # Bot target line (show location name if available, else node number)
+            target_line = ""
+            if entity.is_bot and entity.bot_target is not None:
+                loc = next(
+                    (l for l in self.lm.all if l.node == entity.bot_target), None
+                )
+                target_str = loc.name if loc else f"node {entity.bot_target}"
+                target_line = f"\nTarget: {target_str}"
+
+            # Flavor text
+            flavor = getattr(entity, "flavor_text", "") or ""
+            flavor_line = f"\n\n{flavor}" if flavor else ""
+
             self.info_label.setText(
-                f"{kind_line}: {entity.name}\nNode: {entity.node}{mbr_line}"
+                f"{kind_line}: {entity.name}\n"
+                f"Node: {entity.node}"
+                f"{mbr_line}{target_line}{flavor_line}"
             )
             for i in range(self.entity_list.count()):
                 item = self.entity_list.item(i)
@@ -994,7 +1038,9 @@ class MainWindow(QMainWindow):
             entity.color = v["color"]
             entity.is_bot = v["is_bot"]
             entity.bot_target = v["bot_target"]
+            entity.flavor_text = v["flavor_text"]
             self._refresh_list()
+            self._on_entity_selected(entity)   # refresh info panel
             self.canvas.refresh()
             self.status_bar.showMessage(f"'{entity.name}' updated.")
 
@@ -1010,6 +1056,7 @@ class MainWindow(QMainWindow):
                 group.name = v["name"]
                 group.is_bot = v["is_bot"]
                 group.bot_target = v["bot_target"]
+                group.flavor_text = v["flavor_text"]
                 # Apply member changes
                 new_members = set(v["members"])
                 old_members = set(group.members)
@@ -1018,6 +1065,7 @@ class MainWindow(QMainWindow):
                 for eid in new_members - old_members:
                     self.em.add_to_group(group.id, eid)
                 self.canvas.set_selected(group)
+                self._on_entity_selected(group)   # refresh info panel
                 self.status_bar.showMessage(f"Group '{group.name}' updated.")
         self._refresh_list()
         self.canvas.refresh()

@@ -182,7 +182,7 @@ class AddEntityDialog(QDialog):
 
 
 # ---------------------------------------------------------------------------
-# Edit individual entity (name / color / bot flag)
+# Edit individual entity (name / color / bot flag / flavor text / bot target)
 # ---------------------------------------------------------------------------
 
 class EditEntityDialog(QDialog):
@@ -191,8 +191,13 @@ class EditEntityDialog(QDialog):
         self.setWindowTitle(f"Edit: {entity.name}")
         self._color = entity.color
         self._lm = lm
+        # Internal storage for the resolved target node (set by combo selection)
+        self._current_target: Optional[int] = getattr(entity, "bot_target", None)
+
         root = QVBoxLayout(self)
+        root.setSpacing(8)
         layout = QFormLayout()
+        layout.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         root.addLayout(layout)
 
         self.name_edit = QLineEdit(entity.name)
@@ -210,44 +215,40 @@ class EditEntityDialog(QDialog):
         self.is_bot = QCheckBox("This is a bot")
         self.is_bot.setChecked(entity.is_bot)
 
+        # Flavor / notes text
+        self.flavor_edit = QPlainTextEdit()
+        self.flavor_edit.setPlaceholderText("Optional notes, backstory, or flavor…")
+        self.flavor_edit.setFixedHeight(72)
+        self.flavor_edit.setPlainText(getattr(entity, "flavor_text", "") or "")
+
         layout.addRow("Name:", self.name_edit)
         layout.addRow("Color:", color_row)
         layout.addRow("", self.is_bot)
+        layout.addRow("Notes:", self.flavor_edit)
 
-        # ── Bot Target section ────────────────────────────────────────
+        # ── Bot Target ────────────────────────────────────────────────
         self._target_group = QGroupBox("Bot Target")
         tg_layout = QFormLayout(self._target_group)
+        tg_layout.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
 
         self._target_loc_combo = QComboBox()
-        self._target_loc_combo.addItem("— none (use node) —", None)
+        self._target_loc_combo.addItem("— No target —", None)
         if lm:
             for loc in lm.all:
                 self._target_loc_combo.addItem(f"{loc.name}  (node {loc.node})", loc.node)
 
-        self._target_node_spin = QSpinBox()
-        self._target_node_spin.setRange(0, max_node)
-        self._target_node_spin.setSpecialValueText("None")
-        self._target_node_spin.setToolTip("0 = no target")
-
-        # Pre-fill from entity's current bot_target
-        current_target = getattr(entity, "bot_target", None)
-        self._target_node_spin.setValue(current_target if current_target else 0)
-
-        # Try to pre-select a matching location
-        if lm and current_target:
+        # Pre-select the matching location if one is already assigned
+        if lm and self._current_target is not None:
             for i in range(self._target_loc_combo.count()):
-                if self._target_loc_combo.itemData(i) == current_target:
+                if self._target_loc_combo.itemData(i) == self._current_target:
                     self._target_loc_combo.setCurrentIndex(i)
                     break
 
         self._target_loc_combo.currentIndexChanged.connect(self._on_loc_selected)
-
-        tg_layout.addRow("Location:", self._target_loc_combo)
-        tg_layout.addRow("Or Node:", self._target_node_spin)
+        tg_layout.addRow("Move toward:", self._target_loc_combo)
 
         self._target_group.setEnabled(entity.is_bot)
         self.is_bot.toggled.connect(self._target_group.setEnabled)
-
         root.addWidget(self._target_group)
 
         buttons = QDialogButtonBox(
@@ -258,9 +259,7 @@ class EditEntityDialog(QDialog):
         root.addWidget(buttons)
 
     def _on_loc_selected(self, idx: int):
-        node = self._target_loc_combo.itemData(idx)
-        if node is not None:
-            self._target_node_spin.setValue(node)
+        self._current_target = self._target_loc_combo.itemData(idx)
 
     def _pick_color(self):
         c = QColorDialog.getColor(QColor(self._color), self)
@@ -275,13 +274,13 @@ class EditEntityDialog(QDialog):
         self.accept()
 
     def get_values(self) -> dict:
-        raw = self._target_node_spin.value()
-        bot_target: Optional[int] = raw if (self.is_bot.isChecked() and raw > 0) else None
+        bot_target: Optional[int] = self._current_target if self.is_bot.isChecked() else None
         return {
             "name": self.name_edit.text().strip(),
             "color": self._color,
             "is_bot": self.is_bot.isChecked(),
             "bot_target": bot_target,
+            "flavor_text": self.flavor_edit.toPlainText().strip(),
         }
 
 
@@ -311,10 +310,15 @@ class EditGroupDialog(QDialog):
             e.id for e in em.at_node(group.node) if e.id != group.id
         ]
 
+        # Internal storage for the resolved target node
+        self._current_target: Optional[int] = getattr(group, "bot_target", None)
+
         root = QVBoxLayout(self)
+        root.setSpacing(8)
 
         # --- Header row: name + bot ---
         hdr = QFormLayout()
+        hdr.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         self.name_edit = QLineEdit(group.name)
         self.is_bot = QCheckBox("Bot group")
         self.is_bot.setChecked(group.is_bot)
@@ -345,34 +349,35 @@ class EditGroupDialog(QDialog):
         panels.addWidget(avail_box)
         root.addLayout(panels)
 
+        # --- Flavor / notes ---
+        flavor_form = QFormLayout()
+        flavor_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        self.flavor_edit = QPlainTextEdit()
+        self.flavor_edit.setPlaceholderText("Optional notes, backstory, or flavor…")
+        self.flavor_edit.setFixedHeight(72)
+        self.flavor_edit.setPlainText(getattr(group, "flavor_text", "") or "")
+        flavor_form.addRow("Notes:", self.flavor_edit)
+        root.addLayout(flavor_form)
+
         # --- Bot Target section ---
         self._target_group = QGroupBox("Bot Target")
         tg_layout = QFormLayout(self._target_group)
+        tg_layout.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
 
         self._target_loc_combo = QComboBox()
-        self._target_loc_combo.addItem("— none (use node) —", None)
+        self._target_loc_combo.addItem("— No target —", None)
         if lm:
             for loc in lm.all:
                 self._target_loc_combo.addItem(f"{loc.name}  (node {loc.node})", loc.node)
 
-        self._target_node_spin = QSpinBox()
-        self._target_node_spin.setRange(0, max_node)
-        self._target_node_spin.setSpecialValueText("None")
-        self._target_node_spin.setToolTip("0 = no target")
-
-        current_target = getattr(group, "bot_target", None)
-        self._target_node_spin.setValue(current_target if current_target else 0)
-
-        if lm and current_target:
+        if lm and self._current_target is not None:
             for i in range(self._target_loc_combo.count()):
-                if self._target_loc_combo.itemData(i) == current_target:
+                if self._target_loc_combo.itemData(i) == self._current_target:
                     self._target_loc_combo.setCurrentIndex(i)
                     break
 
         self._target_loc_combo.currentIndexChanged.connect(self._on_loc_selected)
-
-        tg_layout.addRow("Location:", self._target_loc_combo)
-        tg_layout.addRow("Or Node:", self._target_node_spin)
+        tg_layout.addRow("Move toward:", self._target_loc_combo)
 
         self._target_group.setEnabled(group.is_bot)
         self.is_bot.toggled.connect(self._target_group.setEnabled)
@@ -397,9 +402,7 @@ class EditGroupDialog(QDialog):
     # ------------------------------------------------------------------
 
     def _on_loc_selected(self, idx: int):
-        node = self._target_loc_combo.itemData(idx)
-        if node is not None:
-            self._target_node_spin.setValue(node)
+        self._current_target = self._target_loc_combo.itemData(idx)
 
     def _populate(self):
         self.members_list.clear()
@@ -460,13 +463,13 @@ class EditGroupDialog(QDialog):
         return self._disband
 
     def get_values(self) -> dict:
-        raw = self._target_node_spin.value()
-        bot_target: Optional[int] = raw if (self.is_bot.isChecked() and raw > 0) else None
+        bot_target: Optional[int] = self._current_target if self.is_bot.isChecked() else None
         return {
             "name": self.name_edit.text().strip() or self._group.name,
             "is_bot": self.is_bot.isChecked(),
             "members": list(self._members),        # desired final member list
             "bot_target": bot_target,
+            "flavor_text": self.flavor_edit.toPlainText().strip(),
         }
 
 
