@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 from typing import Optional
 
 from PyQt6.QtCore import Qt
@@ -53,6 +54,8 @@ class MainWindow(QMainWindow):
         self.grid = HexGrid(**CHULT_GRID)
         self.em = EntityManager()
         self.lm = LocationManager()
+        self.day: int = 1
+        self._bonus_move_entity: Optional[str] = None   # ID of entity with unused bonus move
 
         self._build_ui()
         self._build_menu()
@@ -91,6 +94,25 @@ class MainWindow(QMainWindow):
         panel.setFixedWidth(230)
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(8, 8, 8, 8)
+
+        # Day counter
+        day_group = QGroupBox("Day")
+        dg = QVBoxLayout(day_group)
+        self.day_label = QLabel("Day 1")
+        self.day_label.setStyleSheet("font-size: 16pt; font-weight: bold;")
+        self.day_progress_label = QLabel("0 / 0 acted")
+        self.day_progress_label.setStyleSheet("color: #aaa;")
+        day_btn_row = QHBoxLayout()
+        wait_btn = QPushButton("Wait  [W]")
+        wait_btn.setToolTip("End selected entity's turn without moving")
+        wait_btn.clicked.connect(self._on_entity_wait)
+        adv_btn = QPushButton("Advance Day")
+        adv_btn.clicked.connect(self._advance_day_manual)
+        day_btn_row.addWidget(wait_btn)
+        day_btn_row.addWidget(adv_btn)
+        dg.addWidget(self.day_label)
+        dg.addWidget(self.day_progress_label)
+        dg.addLayout(day_btn_row)
 
         # Entity list
         eg = QGroupBox("Characters & Groups")
@@ -159,6 +181,7 @@ class MainWindow(QMainWindow):
         )
         hint.setWordWrap(True)
 
+        layout.addWidget(day_group)
         layout.addWidget(eg)
         layout.addWidget(lg)
         layout.addWidget(ig)
@@ -239,6 +262,12 @@ class MainWindow(QMainWindow):
 
         tb.addSeparator()
 
+        wait_act = QAction("Wait  [W]", self)
+        wait_act.setShortcut("W")
+        wait_act.setToolTip("End selected entity's turn without moving (also ends bonus move)")
+        wait_act.triggered.connect(self._on_entity_wait)
+        tb.addAction(wait_act)
+
         desel_act = QAction("Deselect  [Esc]", self)
         desel_act.setShortcut("Escape")
         desel_act.triggered.connect(lambda: self.canvas.set_selected(None))
@@ -249,6 +278,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _auto_load_map(self):
+        self._update_day_ui()
         if os.path.isfile(CHULT_MAP_FILE):
             self.canvas.load_image(CHULT_MAP_FILE)
             self.status_bar.showMessage(
@@ -341,7 +371,10 @@ class MainWindow(QMainWindow):
             self.em.disband_group(eid)
         else:
             self.em.remove(eid)
+        if eid == self._bonus_move_entity:
+            self._bonus_move_entity = None
         self._refresh_list()
+        self._update_day_ui()
         self.canvas.refresh()
 
     def _toggle_teleport(self, state):
@@ -434,6 +467,7 @@ class MainWindow(QMainWindow):
         if not path:
             return
         data = {
+            "day": self.day,
             "grid": {
                 "size": self.grid.size,
                 "origin": list(self.grid.origin),
@@ -501,10 +535,14 @@ class MainWindow(QMainWindow):
                         id=ld["id"],
                     )
                 )
+            self.day = data.get("day", 1)
+            self.canvas.clear_moved()
+            self._bonus_move_entity = None
             self.canvas.set_selected(None)
             self.canvas.set_highlighted_location(-1)
             self._refresh_list()
             self._refresh_locations()
+            self._update_day_ui()
             self.canvas.refresh()
             self.status_bar.showMessage(f"Loaded: {path}")
         except Exception as exc:
@@ -524,9 +562,15 @@ class MainWindow(QMainWindow):
                 tags.append("B")
             prefix = f"[{'|'.join(tags)}] " if tags else ""
             cnt = f"  ({len(e.members)} mbr)" if e.is_group and e.members else ""
-            item = QListWidgetItem(f"{prefix}{e.name}{cnt}  → {e.node}")
+            acted = e.id in self.canvas._moved_ids
+            bonus = (e.id == self._bonus_move_entity)
+            turn_mark = " ✓" if acted else (" ★" if bonus else "")
+            item = QListWidgetItem(f"{prefix}{e.name}{cnt}  → {e.node}{turn_mark}")
             item.setData(Qt.ItemDataRole.UserRole, e.id)
-            item.setForeground(QColor(e.color))
+            color = QColor(e.color)
+            if acted:
+                color.setAlpha(140)
+            item.setForeground(color)
             self.entity_list.addItem(item)
 
     def _on_list_click(self, item: QListWidgetItem):
@@ -563,10 +607,49 @@ class MainWindow(QMainWindow):
             self.info_label.setText("None")
 
     def _on_move_requested(self, entity: Entity, target_node: int):
+        is_bonus = (self._bonus_move_entity == entity.id)
+
         self.em.move(entity.id, target_node)
-        self.canvas.set_selected(entity)
-        self.status_bar.showMessage(f"'{entity.name}' moved to node {target_node}.")
         self._check_merge_opportunity(target_node, entity)
+
+        # If the entity merged into a group it's no longer top-level — clear bonus,
+        # the new group starts its turn fresh.
+        if self.em.is_group_member(entity.id):
+            self._bonus_move_entity = None
+            self._refresh_list()
+            self._update_day_ui()
+            return
+
+        if is_bonus:
+            # Player used the bonus move — turn fully done
+            self._bonus_move_entity = None
+            self.canvas.mark_moved(entity.id)
+            self.canvas.set_selected(entity)
+            self.status_bar.showMessage(
+                f"'{entity.name}' used bonus move → node {target_node}.  "
+                f"[{self._progress_str()}]"
+            )
+            self._check_day_end()
+        else:
+            if random.random() < 0.25:
+                # Lucky extra move
+                self._bonus_move_entity = entity.id
+                self.canvas.set_selected(entity)    # not in moved_ids yet → targets shown
+                self.status_bar.showMessage(
+                    f"'{entity.name}' moved → node {target_node}.  "
+                    f"Lucky! One extra move available — click target or press W to pass."
+                )
+            else:
+                self._bonus_move_entity = None
+                self.canvas.mark_moved(entity.id)
+                self.canvas.set_selected(entity)
+                self.status_bar.showMessage(
+                    f"'{entity.name}' moved → node {target_node}.  [{self._progress_str()}]"
+                )
+                self._check_day_end()
+
+        self._refresh_list()
+        self._update_day_ui()
 
     # ------------------------------------------------------------------
     # Merge / join logic
@@ -638,6 +721,59 @@ class MainWindow(QMainWindow):
 
         self._refresh_list()
         self.canvas.refresh()
+
+    # ------------------------------------------------------------------
+    # Day / turn system
+    # ------------------------------------------------------------------
+
+    def _progress_str(self) -> str:
+        entities = self.em.toplevel
+        n = sum(1 for e in entities if e.id in self.canvas._moved_ids)
+        return f"{n}/{len(entities)} acted"
+
+    def _update_day_ui(self):
+        entities = self.em.toplevel
+        n = sum(1 for e in entities if e.id in self.canvas._moved_ids)
+        self.day_label.setText(f"Day {self.day}")
+        self.day_progress_label.setText(f"{n} / {len(entities)} acted")
+
+    def _on_entity_wait(self):
+        """End the selected entity's turn in place (skips or ends bonus move)."""
+        e = self.canvas._selected_entity
+        if e is None or e.id in self.canvas._moved_ids:
+            return
+        self._bonus_move_entity = None
+        self.canvas.mark_moved(e.id)
+        self.canvas.set_selected(e)          # keep selected, targets cleared
+        self.status_bar.showMessage(
+            f"'{e.name}' is waiting.  [{self._progress_str()}]"
+        )
+        self._refresh_list()
+        self._update_day_ui()
+        self._check_day_end()
+
+    def _check_day_end(self):
+        entities = self.em.toplevel
+        if not entities:
+            return
+        if all(e.id in self.canvas._moved_ids for e in entities):
+            self._advance_day()
+
+    def _advance_day(self):
+        """Increment day and reset all turn state."""
+        self.day += 1
+        self.canvas.clear_moved()
+        self._bonus_move_entity = None
+        self.canvas.set_selected(None)
+        self._refresh_list()
+        self._update_day_ui()
+        self.status_bar.showMessage(
+            f"All entities have acted — Day {self.day} has begun!"
+        )
+
+    def _advance_day_manual(self):
+        """Manual 'Advance Day' button — advances regardless of who has acted."""
+        self._advance_day()
 
     # ------------------------------------------------------------------
     # Right-click entity editor

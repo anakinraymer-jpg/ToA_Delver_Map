@@ -44,6 +44,9 @@ class HexMapCanvas(QGraphicsView):
         self._corner_drag_start_scene: tuple[float, float] | None = None
         self._corner_drag_origin: tuple[float, float] | None = None
 
+        # Day-turn tracking
+        self._moved_ids: set[str] = set()   # entity IDs that have fully acted today
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -66,10 +69,20 @@ class HexMapCanvas(QGraphicsView):
         self._draw_entities()
         self._draw_corner_handles()
 
+    def mark_moved(self, entity_id: str):
+        """Mark an entity as having fully acted this day."""
+        self._moved_ids.add(entity_id)
+
+    def clear_moved(self):
+        """Reset all turn-tracking for a new day."""
+        self._moved_ids.clear()
+
     def set_selected(self, entity: Optional[Entity]):
         self._selected_entity = entity
         if entity is None:
             self._valid_targets = set()
+        elif entity.id in self._moved_ids:
+            self._valid_targets = set()     # turn already spent
         elif self.teleport_enabled:
             self._valid_targets = {c.number for c in self.grid.all_cells} - {entity.node}
         else:
@@ -155,31 +168,52 @@ class HexMapCanvas(QGraphicsView):
                 continue
             cx, cy = pos
             r = self.grid.size * 0.38
-            is_sel = self._selected_entity and entity.id == self._selected_entity.id
+            is_sel   = self._selected_entity and entity.id == self._selected_entity.id
+            is_moved = entity.id in self._moved_ids
 
+            # Fill colour — dim when turn is spent
+            fill_color = QColor(entity.color)
+            if is_moved:
+                fill_color.setAlpha(110)
+
+            # Border colour / style
             if is_sel:
                 pen_color, pen_w = QColor("yellow"), 3
+            elif is_moved:
+                pen_color, pen_w = QColor(90, 90, 90), 1
             elif entity.is_bot:
                 pen_color, pen_w = QColor(160, 160, 160), 2
             else:
                 pen_color, pen_w = QColor("white"), 2
 
             pen = QPen(pen_color, pen_w)
-            if entity.is_bot:
+            if entity.is_bot and not is_moved:
                 pen.setStyle(Qt.PenStyle.DashLine)
 
             circle = self._scene.addEllipse(
                 QRectF(cx - r, cy - r, 2 * r, 2 * r),
                 pen,
-                QBrush(QColor(entity.color)),
+                QBrush(fill_color),
             )
             circle.setZValue(5)
 
             lbl = self._scene.addText(entity.label, font)
-            lbl.setDefaultTextColor(QColor("white"))
+            txt_color = QColor(160, 160, 160) if is_moved else QColor("white")
+            lbl.setDefaultTextColor(txt_color)
             br = lbl.boundingRect()
             lbl.setPos(cx - br.width() / 2, cy - br.height() / 2)
             lbl.setZValue(6)
+
+            # Small "✓" overlay for moved entities
+            if is_moved:
+                chk_font = QFont()
+                chk_font.setPointSize(max(5, int(self.grid.size * 0.18)))
+                chk = self._scene.addText("✓", chk_font)
+                chk.setDefaultTextColor(QColor(120, 220, 120, 200))
+                cbr = chk.boundingRect()
+                chk.setPos(cx + r * 0.4 - cbr.width() / 2,
+                            cy - r - cbr.height() * 0.6)
+                chk.setZValue(7)
 
     # ------------------------------------------------------------------
     # Location markers  (z=3 diamonds, z=4 name labels)
