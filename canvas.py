@@ -35,6 +35,11 @@ class HexMapCanvas(QGraphicsView):
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setBackgroundBrush(QBrush(QColor(30, 30, 30)))
 
+        # Corner-drag state  (indices: 0=TL 1=TR 2=BL 3=BR)
+        self._dragging_corner: int = -1
+        self._corner_drag_start_scene: tuple[float, float] | None = None
+        self._corner_drag_origin: tuple[float, float] | None = None
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -49,6 +54,7 @@ class HexMapCanvas(QGraphicsView):
         self._draw_background()
         self._draw_grid()
         self._draw_entities()
+        self._draw_corner_handles()
 
     def set_selected(self, entity: Optional[Entity]):
         self._selected_entity = entity
@@ -151,6 +157,44 @@ class HexMapCanvas(QGraphicsView):
             lbl.setZValue(4)
 
     # ------------------------------------------------------------------
+    # Corner-warp handles
+    # ------------------------------------------------------------------
+
+    # Corner colours: TL=cyan, TR=magenta, BL=yellow, BR=lime
+    _CORNER_COLORS = ["#00e5ff", "#ff40ff", "#ffff00", "#00ff80"]
+    _CORNER_LABELS = ["TL", "TR", "BL", "BR"]
+    _HANDLE_R = 10          # visual radius in scene pixels
+    _HIT_RADIUS = 16        # click-detection radius
+
+    def _draw_corner_handles(self):
+        corners = self.grid.get_warp_corners()   # (tl, tr, bl, br)
+        font = QFont()
+        font.setPointSize(7)
+        font.setBold(True)
+        for i, (cx, cy) in enumerate(corners):
+            color = QColor(self._CORNER_COLORS[i])
+            r = self._HANDLE_R
+            pen = QPen(QColor("white"), 1.5)
+            brush = QBrush(color)
+            circle = self._scene.addEllipse(
+                QRectF(cx - r, cy - r, 2 * r, 2 * r), pen, brush
+            )
+            circle.setZValue(10)
+            lbl = self._scene.addText(self._CORNER_LABELS[i], font)
+            lbl.setDefaultTextColor(QColor("black"))
+            br = lbl.boundingRect()
+            lbl.setPos(cx - br.width() / 2, cy - br.height() / 2)
+            lbl.setZValue(11)
+
+    def _corner_hit(self, sx: float, sy: float) -> int:
+        """Return 0–3 for the first corner handle within hit radius, else -1."""
+        corners = self.grid.get_warp_corners()
+        for i, (cx, cy) in enumerate(corners):
+            if (sx - cx) ** 2 + (sy - cy) ** 2 <= self._HIT_RADIUS ** 2:
+                return i
+        return -1
+
+    # ------------------------------------------------------------------
     # Input handling
     # ------------------------------------------------------------------
 
@@ -166,6 +210,17 @@ class HexMapCanvas(QGraphicsView):
             self.set_origin_click_mode(False)
             self.origin_clicked.emit(sp.x(), sp.y())
             return
+
+        if event.button() == Qt.MouseButton.LeftButton:
+            sp = self.mapToScene(event.pos())
+            idx = self._corner_hit(sp.x(), sp.y())
+            if idx >= 0:
+                self._dragging_corner = idx
+                self._corner_drag_start_scene = (sp.x(), sp.y())
+                corners = self.grid.get_warp_corners()
+                self._corner_drag_origin = corners[idx]
+                self.setCursor(Qt.CursorShape.SizeAllCursor)
+                return
 
         if event.button() == Qt.MouseButton.RightButton:
             self.set_selected(None)
@@ -193,6 +248,18 @@ class HexMapCanvas(QGraphicsView):
                     self.set_selected(here[0])
 
     def mouseMoveEvent(self, event):
+        # Corner drag
+        if self._dragging_corner >= 0 and self._corner_drag_start_scene is not None:
+            sp = self.mapToScene(event.pos())
+            ox, oy = self._corner_drag_origin
+            sx0, sy0 = self._corner_drag_start_scene
+            new_pos = (ox + sp.x() - sx0, oy + sp.y() - sy0)
+            corners = list(self.grid.get_warp_corners())
+            corners[self._dragging_corner] = new_pos
+            self.grid.set_warp_corners(*corners)
+            self.refresh()
+            return
+
         if self._pan_start is not None:
             delta = event.pos() - self._pan_start
             self._pan_start = event.pos()
@@ -205,6 +272,12 @@ class HexMapCanvas(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self._dragging_corner >= 0:
+            self._dragging_corner = -1
+            self._corner_drag_start_scene = None
+            self._corner_drag_origin = None
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+            return
         if event.button() == Qt.MouseButton.MiddleButton:
             self._pan_start = None
             self.setCursor(Qt.CursorShape.ArrowCursor)

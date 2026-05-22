@@ -173,6 +173,12 @@ class MainWindow(QMainWindow):
         origin_act.triggered.connect(self._start_origin_click)
         map_menu.addAction(origin_act)
 
+        map_menu.addSeparator()
+        reset_warp_act = QAction("Reset Warp", self)
+        reset_warp_act.setShortcut("Ctrl+Shift+R")
+        reset_warp_act.triggered.connect(self._reset_warp)
+        map_menu.addAction(reset_warp_act)
+
     def _build_toolbar(self):
         tb = QToolBar()
         tb.setMovable(False)
@@ -192,6 +198,11 @@ class MainWindow(QMainWindow):
         origin_act.setToolTip("Click a hex centre on the map to snap the grid origin there")
         origin_act.triggered.connect(self._start_origin_click)
         tb.addAction(origin_act)
+
+        reset_warp_act2 = QAction("Reset Warp", self)
+        reset_warp_act2.setToolTip("Remove all corner warping and restore the parametric grid")
+        reset_warp_act2.triggered.connect(self._reset_warp)
+        tb.addAction(reset_warp_act2)
 
         tb.addSeparator()
 
@@ -249,6 +260,11 @@ class MainWindow(QMainWindow):
     def _on_grid_preview(self, values: dict):
         self.grid.reconfigure(**values)
         self.canvas.refresh()
+
+    def _reset_warp(self):
+        self.grid.reset_warp()
+        self.canvas.refresh()
+        self.status_bar.showMessage("Warp reset — grid restored to parametric layout.")
 
     def _start_origin_click(self):
         self.canvas.set_origin_click_mode(True)

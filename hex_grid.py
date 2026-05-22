@@ -13,9 +13,16 @@ class HexCell:
 class HexGrid:
     """
     Axial-coordinate hex grid overlaid on a pixel canvas.
-    orientation: 'flat' (flat-top) or 'pointy' (pointy-top)
-    size:        hex radius in pixels (center to corner)
-    origin:      pixel (x, y) of hex (q=0, r=0)
+
+    Warp mode
+    ---------
+    Call set_warp_corners(tl, tr, bl, br) with four pixel positions to enable
+    bilinear warping.  Every parametric hex position is normalised into [0,1]²
+    relative to the parametric bounding box, then bilinearly interpolated to
+    the user-defined quad.  Because individual hex-polygon corners are warped
+    the same way, the tessellation stays gap-free.
+
+    Call reset_warp() or reconfigure() to return to the parametric grid.
     """
 
     def __init__(
@@ -33,6 +40,8 @@ class HexGrid:
         self.rows = rows
         self._cells: dict[tuple[int, int], HexCell] = {}
         self._num_to_coord: dict[int, tuple[int, int]] = {}
+        self._warp_corners: Optional[tuple] = None   # (tl, tr, bl, br) or None
+        self._warp_bbox: Optional[tuple] = None      # (min_x, max_x, min_y, max_y)
         self._rebuild()
 
     # ------------------------------------------------------------------
@@ -59,6 +68,10 @@ class HexGrid:
                     self._cells[(q, r)] = HexCell(q, r, n)
                     self._num_to_coord[n] = (q, r)
                     n += 1
+        # Reset warp state whenever the parametric grid changes
+        self._warp_corners = None
+        self._warp_bbox = None
+        self._compute_warp_bbox()
 
     def reconfigure(self, **kwargs):
         for k, v in kwargs.items():
@@ -66,10 +79,80 @@ class HexGrid:
         self._rebuild()
 
     # ------------------------------------------------------------------
+    # Warp support
+    # ------------------------------------------------------------------
+
+    def _compute_warp_bbox(self):
+        """Cache the axis-aligned bounding box of all parametric hex centres."""
+        if not self._cells:
+            self._warp_bbox = (0.0, 1.0, 0.0, 1.0)
+            return
+        xs, ys = [], []
+        for cell in self._cells.values():
+            x, y = self._parametric_hex_to_pixel(cell.q, cell.r)
+            xs.append(x)
+            ys.append(y)
+        self._warp_bbox = (min(xs), max(xs), min(ys), max(ys))
+
+    def _apply_warp(self, cx: float, cy: float) -> tuple[float, float]:
+        """Bilinearly map a parametric pixel position into the warp quad."""
+        if self._warp_corners is None or self._warp_bbox is None:
+            return cx, cy
+        min_x, max_x, min_y, max_y = self._warp_bbox
+        tl, tr, bl, br = self._warp_corners
+        dx = max_x - min_x or 1.0
+        dy = max_y - min_y or 1.0
+        u = (cx - min_x) / dx
+        v = (cy - min_y) / dy
+        wx = (1 - u) * (1 - v) * tl[0] + u * (1 - v) * tr[0] \
+           + (1 - u) *       v  * bl[0] + u *       v  * br[0]
+        wy = (1 - u) * (1 - v) * tl[1] + u * (1 - v) * tr[1] \
+           + (1 - u) *       v  * bl[1] + u *       v  * br[1]
+        return wx, wy
+
+    def get_warp_corners(self) -> tuple:
+        """
+        Returns the 4 active warp corners (tl, tr, bl, br).
+        If no warp is set, returns the corners of the parametric bbox.
+        """
+        if self._warp_corners is not None:
+            return self._warp_corners
+        if self._warp_bbox is None:
+            self._compute_warp_bbox()
+        min_x, max_x, min_y, max_y = self._warp_bbox
+        return (
+            (min_x, min_y),
+            (max_x, min_y),
+            (min_x, max_y),
+            (max_x, max_y),
+        )
+
+    def set_warp_corners(
+        self,
+        tl: tuple[float, float],
+        tr: tuple[float, float],
+        bl: tuple[float, float],
+        br: tuple[float, float],
+    ):
+        """Enable bilinear warp with these four corner control points."""
+        if self._warp_bbox is None:
+            self._compute_warp_bbox()
+        self._warp_corners = (tl, tr, bl, br)
+
+    def reset_warp(self):
+        """Disable warp and revert to the parametric grid."""
+        self._warp_corners = None
+
+    @property
+    def is_warped(self) -> bool:
+        return self._warp_corners is not None
+
+    # ------------------------------------------------------------------
     # Coordinate conversion
     # ------------------------------------------------------------------
 
-    def hex_to_pixel(self, q: int, r: int) -> tuple[float, float]:
+    def _parametric_hex_to_pixel(self, q: int, r: int) -> tuple[float, float]:
+        """Pure parametric calculation — unaffected by warp."""
         ox, oy = self.origin
         s = self.size
         if self.orientation == "flat":
@@ -80,7 +163,18 @@ class HexGrid:
             y = s * 1.5 * r + oy
         return x, y
 
+    def hex_to_pixel(self, q: int, r: int) -> tuple[float, float]:
+        """Returns the warped pixel position of a hex centre."""
+        return self._apply_warp(*self._parametric_hex_to_pixel(q, r))
+
     def pixel_to_nearest(self, px: float, py: float) -> Optional[tuple[int, int]]:
+        if self._warp_corners is None:
+            return self._pixel_to_nearest_parametric(px, py)
+        return self._pixel_to_nearest_bruteforce(px, py)
+
+    def _pixel_to_nearest_parametric(
+        self, px: float, py: float
+    ) -> Optional[tuple[int, int]]:
         ox, oy = self.origin
         px -= ox
         py -= oy
@@ -93,6 +187,20 @@ class HexGrid:
             r = (2 / 3 * py) / s
         coord = self._cube_round(q, r)
         return coord if coord in self._cells else None
+
+    def _pixel_to_nearest_bruteforce(
+        self, px: float, py: float
+    ) -> Optional[tuple[int, int]]:
+        """O(n) nearest-cell search used when warp is active."""
+        best_coord = None
+        best_d2 = math.inf
+        for (q, r), cell in self._cells.items():
+            cx, cy = self.hex_to_pixel(q, r)
+            d2 = (px - cx) ** 2 + (py - cy) ** 2
+            if d2 < best_d2:
+                best_d2 = d2
+                best_coord = (q, r)
+        return best_coord
 
     @staticmethod
     def _cube_round(fq: float, fr: float) -> tuple[int, int]:
@@ -110,12 +218,17 @@ class HexGrid:
     # ------------------------------------------------------------------
 
     def corners(self, q: int, r: int) -> list[tuple[float, float]]:
-        cx, cy = self.hex_to_pixel(q, r)
+        """
+        Returns the 6 pixel corners of a hex polygon.
+        When warp is active, each corner is warped independently from its
+        parametric position, which keeps the tessellation gap-free.
+        """
+        cx_p, cy_p = self._parametric_hex_to_pixel(q, r)
         angle_offset = 0 if self.orientation == "flat" else 30
         return [
-            (
-                cx + self.size * math.cos(math.radians(60 * i + angle_offset)),
-                cy + self.size * math.sin(math.radians(60 * i + angle_offset)),
+            self._apply_warp(
+                cx_p + self.size * math.cos(math.radians(60 * i + angle_offset)),
+                cy_p + self.size * math.sin(math.radians(60 * i + angle_offset)),
             )
             for i in range(6)
         ]
