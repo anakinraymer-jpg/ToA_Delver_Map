@@ -357,6 +357,38 @@ class HexMapCanvas(QGraphicsView):
             self.tm.set(cell.number, self._terrain_paint_type)
         return cell.number
 
+    def _flood_fill_terrain(self, start_node: int, new_terrain: Optional[str]):
+        """
+        BFS flood fill starting at start_node.
+
+        Spreads to all contiguous hexes that share the *same* starting terrain
+        (including None = unpainted) and paints them with new_terrain.
+        If new_terrain is None the matching region is cleared instead.
+        """
+        initial = self.tm.get(start_node)
+        if initial == new_terrain:
+            return                          # already the right colour — nothing to do
+
+        visited: set[int] = {start_node}
+        queue: list[int] = [start_node]
+        changed: list[int] = []
+
+        while queue:
+            node = queue.pop(0)
+            changed.append(node)
+            for nb in self.grid.neighbor_numbers(node):
+                if nb not in visited and self.tm.get(nb) == initial:
+                    visited.add(nb)
+                    queue.append(nb)
+
+        for node in changed:
+            if new_terrain is None:
+                self.tm.clear(node)
+            else:
+                self.tm.set(node, new_terrain)
+
+        self.refresh()
+
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.MiddleButton:
             self._pan_start = event.pos()
@@ -369,12 +401,24 @@ class HexMapCanvas(QGraphicsView):
         ):
             erase = event.button() == Qt.MouseButton.RightButton
             sp = self.mapToScene(event.pos())
-            node = self._terrain_paint_at(sp, erase)
-            if node is not None:
-                self._terrain_dragging = True
-                self._terrain_drag_erase = erase
-                self._terrain_last_node = node
-                self.refresh()
+            shift = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+
+            if shift:
+                # Shift+click → flood fill / flood erase
+                coord = self.grid.pixel_to_nearest(sp.x(), sp.y())
+                if coord:
+                    cell = self.grid.cell(*coord)
+                    if cell:
+                        fill = None if erase else self._terrain_paint_type
+                        self._flood_fill_terrain(cell.number, fill)
+            else:
+                # Normal click → single hex + start drag
+                node = self._terrain_paint_at(sp, erase)
+                if node is not None:
+                    self._terrain_dragging = True
+                    self._terrain_drag_erase = erase
+                    self._terrain_last_node = node
+                    self.refresh()
             return
 
         # Origin-click calibration mode: any left-click sets the origin

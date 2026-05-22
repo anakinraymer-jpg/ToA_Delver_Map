@@ -242,9 +242,10 @@ class MainWindow(QMainWindow):
         hint = QLabel(
             "<small>Left-click entity to select / move.<br>"
             "Right-click entity to edit.<br>"
-            "Paint mode: left=paint, right=erase.<br>"
+            "Paint: click/drag · Shift+click = fill.<br>"
+            "Right-click = erase · Shift+right = flood erase.<br>"
             "Middle-drag to pan.  Scroll to zoom.<br>"
-            "W = Wait.  P = Paint mode.  Del = Clear terrain.</small>"
+            "W = Wait · P = Paint · Del = Clear terrain.</small>"
         )
         hint.setWordWrap(True)
 
@@ -470,8 +471,9 @@ class MainWindow(QMainWindow):
         self.canvas.set_terrain_paint(enabled, terrain)
         if enabled:
             self.status_bar.showMessage(
-                f"Terrain Paint: {terrain} — left-click/drag to paint, "
-                f"right-click/drag to erase.  P to exit."
+                f"Terrain Paint: {terrain} — "
+                f"click/drag to paint · Shift+click to flood-fill · "
+                f"right-click to erase · Shift+right to flood-erase · P to exit"
             )
         else:
             self.status_bar.showMessage("Terrain Paint: OFF")
