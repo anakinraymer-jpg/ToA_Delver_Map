@@ -1106,9 +1106,25 @@ class MainWindow(QMainWindow):
             if self.tm.get(cell.number) in WATER_TERRAINS
         }
 
+    def _random_passable_neighbor(self, node: int, blocked: set[int]) -> Optional[int]:
+        """
+        Return a random neighbor of *node* that is not in *blocked*, or None
+        if every neighbor is blocked (or the node has no neighbors).
+        Used for the 'lost' wandering mechanic.
+        """
+        choices = [
+            n for n in self.grid.neighbor_numbers(node)
+            if n not in blocked
+        ]
+        return random.choice(choices) if choices else None
+
     def _move_all_bots(self):
         """
         Move every top-level bot one step toward its target (25 % bonus step).
+
+        Each individual step (main and bonus) has an independent 25 % chance
+        of the bot becoming 'lost' — it wanders to a random adjacent passable
+        hex instead of following its planned path.
 
         After all bots have moved, any hexes where a bot landed alongside
         other entities are resolved as standard encounters (Merge / Combat /
@@ -1117,6 +1133,7 @@ class MainWindow(QMainWindow):
         """
         bots = [e for e in self.em.toplevel if e.is_bot]
         moved_count = 0
+        lost_count = 0
         all_water = self._water_blocked_nodes()
 
         # Track the final position of each bot that actually moves,
@@ -1133,9 +1150,17 @@ class MainWindow(QMainWindow):
                 continue
 
             blocked = set() if bot.seafaring else all_water
-            next_node = find_next_step(
-                self.grid, bot.node, bot.bot_target, blocked=blocked
-            )
+
+            # ── Main step: 25 % chance of wandering (lost) ───────────
+            if random.random() < 0.25:
+                next_node = self._random_passable_neighbor(bot.node, blocked)
+                if next_node is not None:
+                    lost_count += 1          # only count if there was somewhere to go
+            else:
+                next_node = find_next_step(
+                    self.grid, bot.node, bot.bot_target, blocked=blocked
+                )
+
             if next_node is None:
                 self.canvas.mark_moved(bot.id)
                 continue
@@ -1143,10 +1168,16 @@ class MainWindow(QMainWindow):
             self.em.move(bot.id, next_node)
             moved_count += 1
 
+            # ── Bonus step (25 % chance), also subject to lost roll ───
             if random.random() < 0.25:
-                bonus = find_next_step(
-                    self.grid, bot.node, bot.bot_target, blocked=blocked
-                )
+                if random.random() < 0.25:
+                    bonus = self._random_passable_neighbor(bot.node, blocked)
+                    if bonus is not None:
+                        lost_count += 1
+                else:
+                    bonus = find_next_step(
+                        self.grid, bot.node, bot.bot_target, blocked=blocked
+                    )
                 if bonus is not None:
                     self.em.move(bot.id, bonus)
 
@@ -1171,19 +1202,24 @@ class MainWindow(QMainWindow):
         ]
 
         if not pending:
-            self.status_bar.showMessage(
-                (f"Bots moved: {moved_count}  [{self._progress_str()}]"
-                 if moved_count else
-                 f"No bots needed to move.  [{self._progress_str()}]")
-            )
+            if moved_count:
+                lost_note = f", {lost_count} lost" if lost_count else ""
+                self.status_bar.showMessage(
+                    f"Bots moved: {moved_count}{lost_note}  [{self._progress_str()}]"
+                )
+            else:
+                self.status_bar.showMessage(
+                    f"No bots needed to move.  [{self._progress_str()}]"
+                )
             self._check_day_end()
             return
 
         # ── One or more encounters to resolve ────────────────────────
+        lost_note = f", {lost_count} lost" if lost_count else ""
         if len(pending) == 1:
             node = pending[0]
             self.status_bar.showMessage(
-                f"Bots moved: {moved_count} — encounter on hex {node}."
+                f"Bots moved: {moved_count}{lost_note} — encounter on hex {node}."
             )
             entities = self.em.at_node(node)
             if len(entities) > 1:
@@ -1203,8 +1239,12 @@ class MainWindow(QMainWindow):
                 summary_msg = QMessageBox(self)
                 summary_msg.setWindowTitle("Bot Movement — Encounters")
                 summary_msg.setTextFormat(Qt.TextFormat.RichText)
+                lost_line = (
+                    f"<br><small><i>{lost_count} step(s) were lost wandering.</i></small>"
+                    if lost_count else ""
+                )
                 summary_msg.setText(
-                    f"Bot movement caused <b>{len(lines)} encounter(s)</b>.<br>"
+                    f"Bot movement caused <b>{len(lines)} encounter(s)</b>.{lost_line}<br>"
                     f"They will be resolved one at a time.<br><br>"
                     + "<br>".join(lines)
                 )
