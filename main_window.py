@@ -9,7 +9,6 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction, QColor
 from PyQt6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
@@ -46,8 +45,7 @@ from dialogs import (
 from entities import Entity, EntityManager
 from hex_grid import HexGrid
 from locations import Location, LocationManager
-from pathfinding import find_next_step
-from terrain import TERRAIN_COLORS, TERRAINS, TerrainMap
+from terrain import TerrainMap
 
 
 class MainWindow(QMainWindow):
@@ -127,13 +125,9 @@ class MainWindow(QMainWindow):
         adv_btn.clicked.connect(self._advance_day_manual)
         day_btn_row.addWidget(wait_btn)
         day_btn_row.addWidget(adv_btn)
-        bots_btn = QPushButton("Move All Bots")
-        bots_btn.setToolTip("Move every bot one step toward its target")
-        bots_btn.clicked.connect(self._move_all_bots)
         dg.addWidget(self.day_label)
         dg.addWidget(self.day_progress_label)
         dg.addLayout(day_btn_row)
-        dg.addWidget(bots_btn)
 
         # ── Characters & Groups ───────────────────────────────────────
         eg = QGroupBox("Characters & Groups")
@@ -148,7 +142,7 @@ class MainWindow(QMainWindow):
         add_btn.clicked.connect(self._add_entity)
         edit_entity_btn = QPushButton("Edit")
         edit_entity_btn.setToolTip(
-            "Edit selected character/group: name, color, notes, bot target"
+            "Edit selected character/group: name, color, seafaring, notes"
         )
         edit_entity_btn.clicked.connect(self._edit_selected_entity)
         rm_btn = QPushButton("Remove")
@@ -177,60 +171,6 @@ class MainWindow(QMainWindow):
         loc_btn_row.addWidget(edit_loc_btn)
         loc_btn_row.addWidget(rm_loc_btn)
         lg_layout.addLayout(loc_btn_row)
-
-        # ── Terrain Paint ─────────────────────────────────────────────
-        tg = QGroupBox("Terrain Paint")
-        tg_layout = QVBoxLayout(tg)
-
-        # Row 1: combo + swatch + paint toggle
-        terrain_row = QHBoxLayout()
-        self.terrain_combo = QComboBox()
-        self.terrain_combo.addItems(TERRAINS)
-        self.terrain_combo.currentTextChanged.connect(self._on_terrain_type_changed)
-
-        self.terrain_swatch = QLabel()
-        self.terrain_swatch.setFixedSize(22, 22)
-
-        self.terrain_paint_btn = QPushButton("Paint  [P]")
-        self.terrain_paint_btn.setCheckable(True)
-        self.terrain_paint_btn.setShortcut("P")
-        self.terrain_paint_btn.toggled.connect(self._on_terrain_paint_toggled)
-
-        terrain_row.addWidget(self.terrain_combo, 1)
-        terrain_row.addWidget(self.terrain_swatch)
-        terrain_row.addWidget(self.terrain_paint_btn)
-        tg_layout.addLayout(terrain_row)
-
-        # Row 2: clear-hex button
-        clear_terrain_btn = QPushButton("Clear This Hex  [Del]")
-        clear_terrain_btn.setShortcut("Del")
-        clear_terrain_btn.setToolTip(
-            "Remove terrain from the hex under the cursor\n"
-            "(or right-click any hex while Paint is on)"
-        )
-        clear_terrain_btn.clicked.connect(self._clear_selected_terrain)
-        tg_layout.addWidget(clear_terrain_btn)
-
-        # Colour legend
-        legend_layout = QVBoxLayout()
-        legend_layout.setSpacing(1)
-        for name in TERRAINS:
-            row = QHBoxLayout()
-            swatch = QLabel()
-            swatch.setFixedSize(14, 14)
-            swatch.setStyleSheet(
-                f"background:{TERRAIN_COLORS[name]};border:1px solid #555;"
-            )
-            lbl = QLabel(name)
-            lbl.setStyleSheet("font-size: 9pt;")
-            row.addWidget(swatch)
-            row.addWidget(lbl)
-            row.addStretch()
-            legend_layout.addLayout(row)
-        tg_layout.addLayout(legend_layout)
-
-        # Initialise swatch to the first terrain
-        self._on_terrain_type_changed(TERRAINS[0])
 
         # ── Selected info ─────────────────────────────────────────────
         ig = QGroupBox("Selected")
@@ -263,9 +203,7 @@ class MainWindow(QMainWindow):
             "<small>"
             "<b>Map:</b> left-click to select/move · right-click to edit<br>"
             "<b>Pan/Zoom:</b> middle-drag · scroll wheel<br>"
-            "<b>Paint:</b> click/drag to paint · Shift+click to flood-fill<br>"
-            "Right-click to erase · Shift+right-click to flood-erase<br>"
-            "<b>Keys:</b> W = Wait · P = Paint · Del = Clear terrain hex"
+            "<b>Keys:</b> W = Wait · Esc = Deselect"
             "</small>"
         )
         hint.setWordWrap(True)
@@ -274,7 +212,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(day_group)
         layout.addWidget(eg)
         layout.addWidget(lg)
-        layout.addWidget(tg)
         layout.addWidget(ig)
         layout.addWidget(self.teleport_check)
         layout.addWidget(opacity_group)
@@ -371,11 +308,6 @@ class MainWindow(QMainWindow):
         wait_act.triggered.connect(self._on_entity_wait)
         tb.addAction(wait_act)
 
-        bots_act = QAction("Move All Bots", self)
-        bots_act.setToolTip("Move every bot one step toward its assigned target")
-        bots_act.triggered.connect(self._move_all_bots)
-        tb.addAction(bots_act)
-
         desel_act = QAction("Deselect  [Esc]", self)
         desel_act.setShortcut("Escape")
         desel_act.triggered.connect(lambda: self.canvas.set_selected(None))
@@ -438,13 +370,13 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage("Warp reset — grid restored to parametric layout.")
 
     def _reset_fog(self):
-        """Clear all revealed hexes, then re-reveal current non-bot positions."""
+        """Clear all revealed hexes, then re-reveal current entity positions."""
         self.canvas._fog_revealed.clear()
         for e in self.em.toplevel:
-            if not e.is_bot:
-                self.canvas._fog_revealed.add(e.node)
+            self.canvas._fog_revealed.add(e.node)
+        self._refresh_locations()
         self.canvas.refresh()
-        self.status_bar.showMessage("Fog of war reset — character positions kept visible.")
+        self.status_bar.showMessage("Fog of war reset — entity positions kept visible.")
 
     def _start_origin_click(self):
         self.canvas.set_origin_click_mode(True)
@@ -468,13 +400,12 @@ class MainWindow(QMainWindow):
             v = dlg.get_values()
             e = Entity(
                 name=v["name"], node=v["node"], color=v["color"],
-                is_group=v["is_group"], is_bot=v["is_bot"],
+                is_group=v["is_group"],
                 seafaring=v["seafaring"],
             )
             self.em.add(e)
-            # Reveal the starting hex for non-bot entities
-            if not e.is_bot:
-                self.canvas.reveal_hex(e.node)
+            self.canvas.reveal_hex(e.node)   # always reveal starting hex
+            self._refresh_locations()        # may expose a location
             self._refresh_list()
             self.canvas.refresh()
 
@@ -513,44 +444,6 @@ class MainWindow(QMainWindow):
         enabled = bool(state)
         self.canvas.set_teleport(enabled)
         self.status_bar.showMessage("Teleport mode " + ("ON" if enabled else "OFF") + ".")
-
-    # ------------------------------------------------------------------
-    # Terrain actions
-    # ------------------------------------------------------------------
-
-    def _on_terrain_type_changed(self, name: str):
-        color = TERRAIN_COLORS.get(name, "#ffffff")
-        self.terrain_swatch.setStyleSheet(
-            f"background:{color};border:1px solid #888;"
-        )
-        if self.terrain_paint_btn.isChecked():
-            self.canvas.set_terrain_paint(True, name)
-
-    def _on_terrain_paint_toggled(self, enabled: bool):
-        terrain = self.terrain_combo.currentText()
-        self.canvas.set_terrain_paint(enabled, terrain)
-        if enabled:
-            self.status_bar.showMessage(
-                f"Terrain Paint: {terrain} — "
-                f"click/drag to paint · Shift+click to flood-fill · "
-                f"right-click to erase · Shift+right to flood-erase · P to exit"
-            )
-        else:
-            self.status_bar.showMessage("Terrain Paint: OFF")
-
-    def _clear_selected_terrain(self):
-        """Clear terrain from the hex the selected entity or location is on,
-        or from the canvas mouse-hover position (rough fallback)."""
-        # Prefer the currently selected entity's node
-        sel = self.canvas._selected_entity
-        if sel:
-            self.tm.clear(sel.node)
-            self.canvas.refresh()
-            self.status_bar.showMessage(f"Terrain cleared at node {sel.node}.")
-            return
-        self.status_bar.showMessage(
-            "Select an entity or use right-click in Paint mode to erase terrain."
-        )
 
     # ------------------------------------------------------------------
     # Location actions
@@ -612,8 +505,12 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage(f"Location '{v['name']}' updated.")
 
     def _refresh_locations(self):
+        """Rebuild the locations list — only shows locations on revealed hexes."""
         self.location_list.clear()
+        revealed = self.canvas._fog_revealed
         for loc in self.lm.all:
+            if loc.node not in revealed:
+                continue   # still hidden by fog of war
             type_tag = f"  [{loc.location_type}]" if loc.location_type else ""
             item = QListWidgetItem(f"{loc.name}{type_tag}  → {loc.node}")
             item.setData(Qt.ItemDataRole.UserRole, loc.id)
@@ -665,10 +562,8 @@ class MainWindow(QMainWindow):
                     "node": e.node,
                     "color": e.color,
                     "is_group": e.is_group,
-                    "is_bot": e.is_bot,
                     "members": list(e.members),
                     "seafaring": e.seafaring,
-                    "bot_target": e.bot_target,
                     "flavor_text": e.flavor_text,
                 }
                 for e in self.em.all
@@ -709,10 +604,8 @@ class MainWindow(QMainWindow):
                         node=ed["node"],
                         color=ed["color"],
                         is_group=ed.get("is_group", False),
-                        is_bot=ed.get("is_bot", False),
                         members=list(ed.get("members", [])),
                         seafaring=ed.get("seafaring", False),
-                        bot_target=ed.get("bot_target"),
                         flavor_text=ed.get("flavor_text", ""),
                         id=ed["id"],
                     )
@@ -739,11 +632,10 @@ class MainWindow(QMainWindow):
             self.canvas.clear_moved()
             self._bonus_move_entity = None
             self.canvas.set_selected(None)
-            # Restore fog-of-war revealed set; pre-reveal non-bot entity positions
+            # Restore fog-of-war revealed set; pre-reveal all entity positions
             revealed = set(data.get("fog_revealed", []))
             for e in self.em.toplevel:
-                if not e.is_bot:
-                    revealed.add(e.node)
+                revealed.add(e.node)
             self.canvas._fog_revealed = revealed
             self.canvas.set_highlighted_location(-1)
             self._refresh_list()
@@ -764,8 +656,6 @@ class MainWindow(QMainWindow):
             tags = []
             if e.is_group:
                 tags.append("G")
-            if e.is_bot:
-                tags.append("B")
             if e.seafaring:
                 tags.append("S")
             prefix = f"[{'|'.join(tags)}] " if tags else ""
@@ -801,25 +691,11 @@ class MainWindow(QMainWindow):
                 kind_line = f"Group ({len(entity.members)} members)"
                 mbr_line = f"\nMembers: {mbr_names}" if mbr_names else ""
             else:
-                kind_line = "Bot" if entity.is_bot else "Character"
+                kind_line = "Character"
                 mbr_line = ""
 
             # Trait badges
-            traits = []
-            if getattr(entity, "seafaring", False):
-                traits.append("Seafaring")
-            if entity.is_bot:
-                traits.append("Bot")
-            trait_line = f"\n{' · '.join(traits)}" if traits else ""
-
-            # Bot target line (show location name if available, else node number)
-            target_line = ""
-            if entity.is_bot and entity.bot_target is not None:
-                loc = next(
-                    (l for l in self.lm.all if l.node == entity.bot_target), None
-                )
-                target_str = loc.name if loc else f"node {entity.bot_target}"
-                target_line = f"\nTarget: {target_str}"
+            trait_line = "\nSea­faring" if getattr(entity, "seafaring", False) else ""
 
             # Flavor text
             flavor = getattr(entity, "flavor_text", "") or ""
@@ -828,7 +704,7 @@ class MainWindow(QMainWindow):
             self.info_label.setText(
                 f"{kind_line}: {entity.name}\n"
                 f"Node: {entity.node}"
-                f"{trait_line}{mbr_line}{target_line}{flavor_line}"
+                f"{trait_line}{mbr_line}{flavor_line}"
             )
             for i in range(self.entity_list.count()):
                 item = self.entity_list.item(i)
@@ -842,9 +718,8 @@ class MainWindow(QMainWindow):
         is_bonus = (self._bonus_move_entity == entity.id)
 
         self.em.move(entity.id, target_node)
-        # Non-bot movement reveals the destination hex
-        if not entity.is_bot:
-            self.canvas.reveal_hex(target_node)
+        self.canvas.reveal_hex(target_node)   # all movement reveals the hex
+        self._refresh_locations()             # may expose a new location
         self._check_merge_opportunity(target_node, entity)
 
         # If the entity merged into a group it's no longer top-level — clear bonus,
@@ -904,8 +779,7 @@ class MainWindow(QMainWindow):
         Show the Merge / ⚔ Combat / Nothing prompt for all top-level
         entities currently on *node*.
 
-        Called from both manual movement (_check_merge_opportunity) and
-        bot movement (_move_all_bots), so the logic lives in one place.
+        Called from manual movement (_check_merge_opportunity).
         """
         if len(entities) < 2:
             return
@@ -1144,186 +1018,6 @@ class MainWindow(QMainWindow):
         self._advance_day()
 
     # ------------------------------------------------------------------
-    # Bot auto-movement
-    # ------------------------------------------------------------------
-
-    def _water_blocked_nodes(self) -> set[int]:
-        """Return the set of all Ocean/Rivers hex nodes (used for terrain gating)."""
-        from canvas import WATER_TERRAINS
-        return {
-            cell.number
-            for cell in self.grid.all_cells
-            if self.tm.get(cell.number) in WATER_TERRAINS
-        }
-
-    def _random_passable_neighbor(self, node: int, blocked: set[int]) -> Optional[int]:
-        """
-        Return a random neighbor of *node* that is not in *blocked*, or None
-        if every neighbor is blocked (or the node has no neighbors).
-        Used for the 'lost' wandering mechanic.
-        """
-        choices = [
-            n for n in self.grid.neighbor_numbers(node)
-            if n not in blocked
-        ]
-        return random.choice(choices) if choices else None
-
-    def _move_all_bots(self):
-        """
-        Move every top-level bot one step toward its target (25 % bonus step).
-
-        Each individual step (main and bonus) has an independent 25 % chance
-        of the bot becoming 'lost' — it wanders to a random adjacent passable
-        hex instead of following its planned path.
-
-        After all bots have moved, any hexes where a bot landed alongside
-        other entities are resolved as standard encounters (Merge / Combat /
-        Nothing), one at a time.  If there are multiple encounters a summary
-        is shown first so the GM knows what to expect.
-        """
-        bots = [e for e in self.em.toplevel if e.is_bot]
-        moved_count = 0
-        lost_count = 0
-        all_water = self._water_blocked_nodes()
-
-        # Track the final position of each bot that actually moves,
-        # preserving encounter order and deduplicating same-node arrivals.
-        encounter_candidates: list[int] = []
-        seen_dest: set[int] = set()
-
-        for bot in bots:
-            if bot.id in self.canvas._moved_ids:
-                continue
-
-            if bot.bot_target is None or bot.node == bot.bot_target:
-                self.canvas.mark_moved(bot.id)
-                continue
-
-            blocked = set() if bot.seafaring else all_water
-
-            # ── Main step: 25 % chance of wandering (lost) ───────────
-            if random.random() < 0.25:
-                next_node = self._random_passable_neighbor(bot.node, blocked)
-                if next_node is not None:
-                    lost_count += 1          # only count if there was somewhere to go
-            else:
-                next_node = find_next_step(
-                    self.grid, bot.node, bot.bot_target, blocked=blocked
-                )
-
-            if next_node is None:
-                self.canvas.mark_moved(bot.id)
-                continue
-
-            self.em.move(bot.id, next_node)
-            moved_count += 1
-
-            # ── Bonus step (25 % chance), also subject to lost roll ───
-            if random.random() < 0.25:
-                if random.random() < 0.25:
-                    bonus = self._random_passable_neighbor(bot.node, blocked)
-                    if bonus is not None:
-                        lost_count += 1
-                else:
-                    bonus = find_next_step(
-                        self.grid, bot.node, bot.bot_target, blocked=blocked
-                    )
-                if bonus is not None:
-                    self.em.move(bot.id, bonus)
-
-            self.canvas.mark_moved(bot.id)
-
-            # Record destination (bot.node is now the final position)
-            dest = bot.node
-            if dest not in seen_dest:
-                seen_dest.add(dest)
-                encounter_candidates.append(dest)
-
-        # Refresh display before any encounter dialogs
-        self.canvas.set_selected(None)
-        self._refresh_list()
-        self._update_day_ui()
-        self.canvas.refresh()
-
-        # Build the ordered list of hexes that actually have encounters
-        pending: list[int] = [
-            n for n in encounter_candidates
-            if len(self.em.at_node(n)) > 1
-        ]
-
-        if not pending:
-            if moved_count:
-                lost_note = f", {lost_count} lost" if lost_count else ""
-                self.status_bar.showMessage(
-                    f"Bots moved: {moved_count}{lost_note}  [{self._progress_str()}]"
-                )
-            else:
-                self.status_bar.showMessage(
-                    f"No bots needed to move.  [{self._progress_str()}]"
-                )
-            self._check_day_end()
-            return
-
-        # ── One or more encounters to resolve ────────────────────────
-        lost_note = f", {lost_count} lost" if lost_count else ""
-        if len(pending) == 1:
-            node = pending[0]
-            self.status_bar.showMessage(
-                f"Bots moved: {moved_count}{lost_note} — encounter on hex {node}."
-            )
-            entities = self.em.at_node(node)
-            if len(entities) > 1:
-                self._resolve_encounter_on_hex(node, entities)
-        else:
-            # Show a summary list first so the GM knows what's coming
-            lines = []
-            for n in pending:
-                ents = self.em.at_node(n)
-                if len(ents) > 1:
-                    lines.append(
-                        f"  Hex {n}:  "
-                        + "  &amp;  ".join(e.name for e in ents)
-                    )
-
-            if lines:
-                summary_msg = QMessageBox(self)
-                summary_msg.setWindowTitle("Bot Movement — Encounters")
-                summary_msg.setTextFormat(Qt.TextFormat.RichText)
-                lost_line = (
-                    f"<br><small><i>{lost_count} step(s) were lost wandering.</i></small>"
-                    if lost_count else ""
-                )
-                summary_msg.setText(
-                    f"Bot movement caused <b>{len(lines)} encounter(s)</b>.{lost_line}<br>"
-                    f"They will be resolved one at a time.<br><br>"
-                    + "<br>".join(lines)
-                )
-                resolve_btn = summary_msg.addButton(
-                    "Resolve All", QMessageBox.ButtonRole.AcceptRole
-                )
-                skip_btn = summary_msg.addButton(
-                    "Skip All", QMessageBox.ButtonRole.RejectRole
-                )
-                summary_msg.exec()
-
-                if summary_msg.clickedButton() == skip_btn:
-                    self._check_day_end()
-                    return
-
-            # Process sequentially; re-check each hex in case earlier
-            # combat resolution already removed or moved some entities.
-            total = len(pending)
-            for i, node in enumerate(pending, 1):
-                entities = self.em.at_node(node)
-                if len(entities) > 1:
-                    self.status_bar.showMessage(
-                        f"Encounter {i} of {total} — Hex {node}"
-                    )
-                    self._resolve_encounter_on_hex(node, entities)
-
-        self._check_day_end()
-
-    # ------------------------------------------------------------------
     # Right-click entity editor
     # ------------------------------------------------------------------
 
@@ -1339,9 +1033,7 @@ class MainWindow(QMainWindow):
             v = dlg.get_values()
             entity.name = v["name"]
             entity.color = v["color"]
-            entity.is_bot = v["is_bot"]
             entity.seafaring = v["seafaring"]
-            entity.bot_target = v["bot_target"]
             entity.flavor_text = v["flavor_text"]
             self._refresh_list()
             self._on_entity_selected(entity)   # refresh info panel
@@ -1361,9 +1053,7 @@ class MainWindow(QMainWindow):
             else:
                 v = dlg.get_values()
                 group.name = v["name"]
-                group.is_bot = v["is_bot"]
                 group.seafaring = v["seafaring"]
-                group.bot_target = v["bot_target"]
                 group.flavor_text = v["flavor_text"]
                 # Apply member changes
                 new_members = set(v["members"])

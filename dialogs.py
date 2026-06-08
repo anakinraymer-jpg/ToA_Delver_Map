@@ -137,7 +137,6 @@ class AddEntityDialog(QDialog):
         self.node_spin.setRange(1, max_node)
 
         self.is_group = QCheckBox("This is a group")
-        self.is_bot = QCheckBox("This is a bot")
         self.seafaring = QCheckBox("Seafaring  (can enter Ocean / Rivers)")
 
         color_row = QHBoxLayout()
@@ -154,7 +153,6 @@ class AddEntityDialog(QDialog):
         layout.addRow("Starting Node:", self.node_spin)
         layout.addRow("Color:", color_row)
         layout.addRow("", self.is_group)
-        layout.addRow("", self.is_bot)
         layout.addRow("", self.seafaring)
 
         buttons = QDialogButtonBox(
@@ -182,13 +180,12 @@ class AddEntityDialog(QDialog):
             "node": self.node_spin.value(),
             "color": self._color,
             "is_group": self.is_group.isChecked(),
-            "is_bot": self.is_bot.isChecked(),
             "seafaring": self.seafaring.isChecked(),
         }
 
 
 # ---------------------------------------------------------------------------
-# Edit individual entity (name / color / bot flag / flavor text / bot target)
+# Edit individual entity (name / color / seafaring / flavor text)
 # ---------------------------------------------------------------------------
 
 class EditEntityDialog(QDialog):
@@ -196,9 +193,6 @@ class EditEntityDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(f"Edit: {entity.name}")
         self._color = entity.color
-        self._lm = lm
-        # Internal storage for the resolved target node (set by combo selection)
-        self._current_target: Optional[int] = getattr(entity, "bot_target", None)
 
         root = QVBoxLayout(self)
         root.setSpacing(8)
@@ -218,9 +212,6 @@ class EditEntityDialog(QDialog):
         color_row.addWidget(pick_btn)
         color_row.addStretch()
 
-        self.is_bot = QCheckBox("This is a bot")
-        self.is_bot.setChecked(entity.is_bot)
-
         self.seafaring = QCheckBox("Seafaring  (can enter Ocean / Rivers)")
         self.seafaring.setChecked(getattr(entity, "seafaring", False))
 
@@ -232,34 +223,8 @@ class EditEntityDialog(QDialog):
 
         layout.addRow("Name:", self.name_edit)
         layout.addRow("Color:", color_row)
-        layout.addRow("", self.is_bot)
         layout.addRow("", self.seafaring)
         layout.addRow("Notes:", self.flavor_edit)
-
-        # ── Bot Target ────────────────────────────────────────────────
-        self._target_group = QGroupBox("Bot Target")
-        tg_layout = QFormLayout(self._target_group)
-        tg_layout.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-
-        self._target_loc_combo = QComboBox()
-        self._target_loc_combo.addItem("— No target —", None)
-        if lm:
-            for loc in lm.all:
-                self._target_loc_combo.addItem(f"{loc.name}  (node {loc.node})", loc.node)
-
-        # Pre-select the matching location if one is already assigned
-        if lm and self._current_target is not None:
-            for i in range(self._target_loc_combo.count()):
-                if self._target_loc_combo.itemData(i) == self._current_target:
-                    self._target_loc_combo.setCurrentIndex(i)
-                    break
-
-        self._target_loc_combo.currentIndexChanged.connect(self._on_loc_selected)
-        tg_layout.addRow("Move toward:", self._target_loc_combo)
-
-        self._target_group.setEnabled(entity.is_bot)
-        self.is_bot.toggled.connect(self._target_group.setEnabled)
-        root.addWidget(self._target_group)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -267,9 +232,6 @@ class EditEntityDialog(QDialog):
         buttons.accepted.connect(self._on_accept)
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
-
-    def _on_loc_selected(self, idx: int):
-        self._current_target = self._target_loc_combo.itemData(idx)
 
     def _pick_color(self):
         c = QColorDialog.getColor(QColor(self._color), self)
@@ -284,13 +246,10 @@ class EditEntityDialog(QDialog):
         self.accept()
 
     def get_values(self) -> dict:
-        bot_target: Optional[int] = self._current_target if self.is_bot.isChecked() else None
         return {
             "name": self.name_edit.text().strip(),
             "color": self._color,
-            "is_bot": self.is_bot.isChecked(),
             "seafaring": self.seafaring.isChecked(),
-            "bot_target": bot_target,
             "flavor_text": self.flavor_edit.toPlainText().strip(),
         }
 
@@ -321,22 +280,16 @@ class EditGroupDialog(QDialog):
             e.id for e in em.at_node(group.node) if e.id != group.id
         ]
 
-        # Internal storage for the resolved target node
-        self._current_target: Optional[int] = getattr(group, "bot_target", None)
-
         root = QVBoxLayout(self)
         root.setSpacing(8)
 
-        # --- Header row: name + bot + seafaring ---
+        # --- Header row: name + seafaring ---
         hdr = QFormLayout()
         hdr.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         self.name_edit = QLineEdit(group.name)
-        self.is_bot = QCheckBox("Bot group")
-        self.is_bot.setChecked(group.is_bot)
         self.seafaring = QCheckBox("Seafaring  (can enter Ocean / Rivers)")
         self.seafaring.setChecked(getattr(group, "seafaring", False))
         hdr.addRow("Group Name:", self.name_edit)
-        hdr.addRow("", self.is_bot)
         hdr.addRow("", self.seafaring)
         root.addLayout(hdr)
 
@@ -373,31 +326,6 @@ class EditGroupDialog(QDialog):
         flavor_form.addRow("Notes:", self.flavor_edit)
         root.addLayout(flavor_form)
 
-        # --- Bot Target section ---
-        self._target_group = QGroupBox("Bot Target")
-        tg_layout = QFormLayout(self._target_group)
-        tg_layout.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-
-        self._target_loc_combo = QComboBox()
-        self._target_loc_combo.addItem("— No target —", None)
-        if lm:
-            for loc in lm.all:
-                self._target_loc_combo.addItem(f"{loc.name}  (node {loc.node})", loc.node)
-
-        if lm and self._current_target is not None:
-            for i in range(self._target_loc_combo.count()):
-                if self._target_loc_combo.itemData(i) == self._current_target:
-                    self._target_loc_combo.setCurrentIndex(i)
-                    break
-
-        self._target_loc_combo.currentIndexChanged.connect(self._on_loc_selected)
-        tg_layout.addRow("Move toward:", self._target_loc_combo)
-
-        self._target_group.setEnabled(group.is_bot)
-        self.is_bot.toggled.connect(self._target_group.setEnabled)
-
-        root.addWidget(self._target_group)
-
         # --- Disband + OK/Cancel ---
         disband_btn = QPushButton("Disband Group")
         disband_btn.setStyleSheet("color: #e74c3c;")
@@ -415,9 +343,6 @@ class EditGroupDialog(QDialog):
 
     # ------------------------------------------------------------------
 
-    def _on_loc_selected(self, idx: int):
-        self._current_target = self._target_loc_combo.itemData(idx)
-
     def _populate(self):
         self.members_list.clear()
         self.avail_list.clear()
@@ -432,12 +357,7 @@ class EditGroupDialog(QDialog):
 
     @staticmethod
     def _add_row(lst: QListWidget, entity):
-        flags = []
-        if entity.is_bot:
-            flags.append("BOT")
-        if entity.is_group:
-            flags.append("GRP")
-        tag = f"[{'/'.join(flags)}] " if flags else ""
+        tag = "[GRP] " if entity.is_group else ""
         item = QListWidgetItem(f"{tag}{entity.name}")
         item.setData(Qt.ItemDataRole.UserRole, entity.id)
         item.setForeground(QColor(entity.color))
@@ -477,13 +397,10 @@ class EditGroupDialog(QDialog):
         return self._disband
 
     def get_values(self) -> dict:
-        bot_target: Optional[int] = self._current_target if self.is_bot.isChecked() else None
         return {
             "name": self.name_edit.text().strip() or self._group.name,
-            "is_bot": self.is_bot.isChecked(),
             "seafaring": self.seafaring.isChecked(),
             "members": list(self._members),        # desired final member list
-            "bot_target": bot_target,
             "flavor_text": self.flavor_edit.toPlainText().strip(),
         }
 
