@@ -541,6 +541,7 @@ class MainWindow(QMainWindow):
             loc = Location(
                 name=v["name"], node=v["node"],
                 color=v["color"], description=v["description"],
+                location_type=v["location_type"],
             )
             self.lm.add(loc)
             self._refresh_locations()
@@ -575,10 +576,15 @@ class MainWindow(QMainWindow):
         dlg.desc_edit.setPlainText(loc.description)
         dlg._color = loc.color
         dlg._preview.setStyleSheet(f"background:{loc.color};border:1px solid #888;")
+        # Pre-select the current location type in the combo
+        idx = dlg.type_combo.findData(loc.location_type)
+        if idx >= 0:
+            dlg.type_combo.setCurrentIndex(idx)
         if dlg.exec():
             v = dlg.get_values()
             self.lm.update(lid, name=v["name"], node=v["node"],
-                           color=v["color"], description=v["description"])
+                           color=v["color"], description=v["description"],
+                           location_type=v["location_type"])
             self._refresh_locations()
             self.canvas.refresh()
             self.status_bar.showMessage(f"Location '{v['name']}' updated.")
@@ -586,7 +592,8 @@ class MainWindow(QMainWindow):
     def _refresh_locations(self):
         self.location_list.clear()
         for loc in self.lm.all:
-            item = QListWidgetItem(f"{loc.name}  → {loc.node}")
+            type_tag = f"  [{loc.location_type}]" if loc.location_type else ""
+            item = QListWidgetItem(f"{loc.name}{type_tag}  → {loc.node}")
             item.setData(Qt.ItemDataRole.UserRole, loc.id)
             item.setForeground(QColor(loc.color))
             self.location_list.addItem(item)
@@ -599,8 +606,9 @@ class MainWindow(QMainWindow):
         self.canvas._selected_entity = None
         self.canvas._valid_targets = set()
         self.entity_list.clearSelection()
+        type_line = f"\nType: {loc.location_type}" if loc.location_type else ""
         desc_line = f"\n{loc.description}" if loc.description else ""
-        self.info_label.setText(f"Location: {loc.name}\nNode: {loc.node}{desc_line}")
+        self.info_label.setText(f"Location: {loc.name}\nNode: {loc.node}{type_line}{desc_line}")
         self.canvas.set_highlighted_location(loc.node)
         pos = self.grid.pixel_of(loc.node)
         if pos:
@@ -622,6 +630,11 @@ class MainWindow(QMainWindow):
                 "orientation": self.grid.orientation,
                 "cols": self.grid.cols,
                 "rows": self.grid.rows,
+                # warp_corners is None when no bilinear warp has been applied
+                "warp_corners": (
+                    [list(c) for c in self.grid.get_warp_corners()]
+                    if self.grid.is_warped else None
+                ),
             },
             "entities": [
                 {
@@ -660,6 +673,10 @@ class MainWindow(QMainWindow):
                 cols=g["cols"],
                 rows=g["rows"],
             )
+            # Restore warp corners AFTER reconfigure() (which resets them)
+            wc = g.get("warp_corners")
+            if wc is not None:
+                self.grid.set_warp_corners(*[tuple(c) for c in wc])
             for e in self.em.all:
                 self.em.remove(e.id)
             for ed in data["entities"]:
@@ -687,6 +704,7 @@ class MainWindow(QMainWindow):
                         node=ld["node"],
                         color=ld.get("color", "#f39c12"),
                         description=ld.get("description", ""),
+                        location_type=ld.get("location_type", ""),
                         id=ld["id"],
                     )
                 )

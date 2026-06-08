@@ -4,6 +4,9 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Optional
 
+# Recognised location structure types (empty string = untyped / plain location)
+LOCATION_TYPES: list[str] = ["Structure", "Outdoor Structure", "Cave"]
+
 
 @dataclass
 class Location:
@@ -11,6 +14,7 @@ class Location:
     node: int
     color: str = "#f39c12"          # amber default
     description: str = ""
+    location_type: str = ""         # one of LOCATION_TYPES or "" for untyped
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
 
@@ -60,6 +64,7 @@ class LocationManager:
                 "node": l.node,
                 "color": l.color,
                 "description": l.description,
+                "location_type": l.location_type,
             }
             for l in self.all
         ]
@@ -73,6 +78,7 @@ class LocationManager:
                 node=d["node"],
                 color=d.get("color", "#f39c12"),
                 description=d.get("description", ""),
+                location_type=d.get("location_type", ""),
                 id=d["id"],
             ))
         return lm

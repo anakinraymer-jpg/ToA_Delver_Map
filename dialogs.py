@@ -1,5 +1,6 @@
 from typing import Optional
 
+from locations import LOCATION_TYPES
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
@@ -608,6 +609,11 @@ class AddLocationDialog(QDialog):
         self.name_edit = QLineEdit()
         self.name_edit.setPlaceholderText("e.g. Port Nyanzaru")
 
+        self.type_combo = QComboBox()
+        self.type_combo.addItem("— None —", "")
+        for t in LOCATION_TYPES:
+            self.type_combo.addItem(t, t)
+
         self.node_spin = QSpinBox()
         self.node_spin.setRange(1, max_node)
         self.node_spin.setValue(preset_node)
@@ -627,6 +633,7 @@ class AddLocationDialog(QDialog):
         color_row.addStretch()
 
         layout.addRow("Name:", self.name_edit)
+        layout.addRow("Type:", self.type_combo)
         layout.addRow("Hex Node:", self.node_spin)
         layout.addRow("Description:", self.desc_edit)
         layout.addRow("Color:", color_row)
@@ -656,4 +663,5 @@ class AddLocationDialog(QDialog):
             "node": self.node_spin.value(),
             "color": self._color,
             "description": self.desc_edit.toPlainText().strip(),
+            "location_type": self.type_combo.currentData(),
         }
