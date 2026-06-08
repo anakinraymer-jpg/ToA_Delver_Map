@@ -66,6 +66,7 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._build_menu()
         self._build_toolbar()
+        self.canvas.fog_enabled = True   # player map — fog of war always on
         self._auto_load_map()
 
     # ------------------------------------------------------------------
@@ -328,6 +329,15 @@ class MainWindow(QMainWindow):
         reset_warp_act.triggered.connect(self._reset_warp)
         map_menu.addAction(reset_warp_act)
 
+        map_menu.addSeparator()
+        reset_fog_act = QAction("Reset Fog of War", self)
+        reset_fog_act.setToolTip(
+            "Clear all revealed hexes and re-cover the map.  "
+            "Current character positions are kept visible."
+        )
+        reset_fog_act.triggered.connect(self._reset_fog)
+        map_menu.addAction(reset_fog_act)
+
     def _build_toolbar(self):
         tb = QToolBar()
         tb.setMovable(False)
@@ -427,6 +437,15 @@ class MainWindow(QMainWindow):
         self.canvas.refresh()
         self.status_bar.showMessage("Warp reset — grid restored to parametric layout.")
 
+    def _reset_fog(self):
+        """Clear all revealed hexes, then re-reveal current non-bot positions."""
+        self.canvas._fog_revealed.clear()
+        for e in self.em.toplevel:
+            if not e.is_bot:
+                self.canvas._fog_revealed.add(e.node)
+        self.canvas.refresh()
+        self.status_bar.showMessage("Fog of war reset — character positions kept visible.")
+
     def _start_origin_click(self):
         self.canvas.set_origin_click_mode(True)
         self.status_bar.showMessage(
@@ -453,6 +472,9 @@ class MainWindow(QMainWindow):
                 seafaring=v["seafaring"],
             )
             self.em.add(e)
+            # Reveal the starting hex for non-bot entities
+            if not e.is_bot:
+                self.canvas.reveal_hex(e.node)
             self._refresh_list()
             self.canvas.refresh()
 
@@ -653,6 +675,7 @@ class MainWindow(QMainWindow):
             ],
             "locations": self.lm.to_list(),
             "terrain": self.tm.to_dict(),
+            "fog_revealed": sorted(self.canvas._fog_revealed),
         }
         with open(path, "w") as f:
             json.dump(data, f, indent=2)
@@ -716,6 +739,12 @@ class MainWindow(QMainWindow):
             self.canvas.clear_moved()
             self._bonus_move_entity = None
             self.canvas.set_selected(None)
+            # Restore fog-of-war revealed set; pre-reveal non-bot entity positions
+            revealed = set(data.get("fog_revealed", []))
+            for e in self.em.toplevel:
+                if not e.is_bot:
+                    revealed.add(e.node)
+            self.canvas._fog_revealed = revealed
             self.canvas.set_highlighted_location(-1)
             self._refresh_list()
             self._refresh_locations()
@@ -813,6 +842,9 @@ class MainWindow(QMainWindow):
         is_bonus = (self._bonus_move_entity == entity.id)
 
         self.em.move(entity.id, target_node)
+        # Non-bot movement reveals the destination hex
+        if not entity.is_bot:
+            self.canvas.reveal_hex(target_node)
         self._check_merge_opportunity(target_node, entity)
 
         # If the entity merged into a group it's no longer top-level — clear bonus,

@@ -52,6 +52,10 @@ class HexMapCanvas(QGraphicsView):
         # Day-turn tracking
         self._moved_ids: set[str] = set()   # entity IDs that have fully acted today
 
+        # Fog of war
+        self.fog_enabled: bool = False
+        self._fog_revealed: set[int] = set()   # node numbers that have been uncovered
+
         # Terrain paint state
         self._terrain_paint_mode: bool = False
         self._terrain_paint_type: str = "Jungle"
@@ -81,6 +85,7 @@ class HexMapCanvas(QGraphicsView):
         self._draw_locations()
         self._draw_bot_targets()
         self._draw_entities()
+        self._draw_fog()            # covers unrevealed hexes above everything else
         self._draw_corner_handles()
 
     def mark_moved(self, entity_id: str):
@@ -119,6 +124,14 @@ class HexMapCanvas(QGraphicsView):
 
     def set_grid_opacity(self, value: int):
         self.grid_opacity = max(0, min(255, value))
+        self.refresh()
+
+    def reveal_hex(self, node: int):
+        """Lift fog on a single hex.  Call after a non-bot entity moves there."""
+        self._fog_revealed.add(node)
+
+    def set_fog_enabled(self, enabled: bool):
+        self.fog_enabled = enabled
         self.refresh()
 
     def set_origin_click_mode(self, enabled: bool):
@@ -364,6 +377,62 @@ class HexMapCanvas(QGraphicsView):
                 dot_brush,
             )
             dot.setZValue(4.6)
+
+    # ------------------------------------------------------------------
+    # Fog of war  (z=8 black fill · z=9 border/tint · z=9.5 node number)
+    # ------------------------------------------------------------------
+
+    def _draw_fog(self):
+        """
+        For every hex NOT yet revealed, draw a solid black overlay that hides
+        all terrain, location and entity information.  The hex border and node
+        number remain visible in white so the player can navigate.  If an
+        unrevealed hex is a valid move target it gets a green tint on top of
+        the fog instead of a white border, so the player knows they can step
+        there.
+        """
+        if not self.fog_enabled:
+            return
+
+        op = self.grid_opacity
+        text_alpha = max(0, min(255, int(op * 1.2)))
+
+        font = QFont()
+        font.setPointSize(max(6, int(self.grid.size * 0.28)))
+
+        pen_none    = QPen(Qt.PenStyle.NoPen)
+        pen_white   = QPen(QColor(255, 255, 255, min(255, op + 60)), 1)
+        pen_target  = QPen(QColor(80, 200, 80, min(255, op + 60)), 2)
+        brush_fog    = QBrush(QColor(0, 0, 0, 245))   # near-opaque black
+        brush_target = QBrush(QColor(80, 200, 80, min(255, op // 3)))
+        brush_clear  = QBrush(Qt.BrushStyle.NoBrush)
+
+        for cell in self.grid.all_cells:
+            if cell.number in self._fog_revealed:
+                continue                            # already uncovered — skip
+
+            corners = self.grid.corners(cell.q, cell.r)
+            poly = QPolygonF([QPointF(x, y) for x, y in corners])
+            cx, cy = self.grid.hex_to_pixel(cell.q, cell.r)
+            is_target = cell.number in self._valid_targets
+
+            # ── Solid black fill ─────────────────────────────────────────
+            self._scene.addPolygon(poly, pen_none, brush_fog).setZValue(8)
+
+            # ── Border + optional move-target tint above the fog ─────────
+            if is_target:
+                # Green semi-transparent fill + green border
+                self._scene.addPolygon(poly, pen_target, brush_target).setZValue(9)
+            else:
+                # White outline only
+                self._scene.addPolygon(poly, pen_white, brush_clear).setZValue(9)
+
+            # ── Node number in white ──────────────────────────────────────
+            num = self._scene.addText(str(cell.number), font)
+            num.setDefaultTextColor(QColor(255, 255, 255, text_alpha))
+            br = num.boundingRect()
+            num.setPos(cx - br.width() / 2, cy - br.height() / 2)
+            num.setZValue(9.5)
 
     # ------------------------------------------------------------------
     # Corner-warp handles
