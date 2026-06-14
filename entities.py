@@ -14,6 +14,7 @@ class Entity:
     bot_target: Optional[int] = None              # target hex node for auto-pathfinding (bots only)
     flavor_text: str = ""                         # optional notes / backstory shown in info panel
     seafaring: bool = False                       # can enter Ocean / Rivers terrain tiles
+    is_player: bool = False                       # True when this entity is the character-sheet PC
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
     @property

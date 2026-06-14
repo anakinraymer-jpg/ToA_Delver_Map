@@ -124,7 +124,7 @@ class GridSettingsDialog(QDialog):
 
 
 class AddEntityDialog(QDialog):
-    def __init__(self, max_node: int, parent=None):
+    def __init__(self, max_node: int, parent=None, *, player_name: str = ""):
         super().__init__(parent)
         self.setWindowTitle("Add Character / Group")
         self._color = "#e74c3c"
@@ -132,6 +132,13 @@ class AddEntityDialog(QDialog):
 
         self.name_edit = QLineEdit()
         self.name_edit.setPlaceholderText("Name")
+
+        # Quick-fill button when a character sheet name is available
+        if player_name:
+            use_btn = QPushButton(f'★  Use character sheet name: "{player_name}"')
+            use_btn.setStyleSheet("color: #c8a84b; font-weight: bold;")
+            use_btn.clicked.connect(lambda: self.name_edit.setText(player_name))
+            layout.addRow("", use_btn)
 
         self.node_spin = QSpinBox()
         self.node_spin.setRange(1, max_node)

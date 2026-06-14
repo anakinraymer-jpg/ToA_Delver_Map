@@ -62,10 +62,11 @@ from terrain import TerrainMap
 
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, *, player_name: str = ""):
         super().__init__()
         self.setWindowTitle("RPG Hex Map Tool")
         self.resize(1280, 820)
+        self.player_name: str = player_name  # character-sheet PC name, may be empty
 
         self.grid = HexGrid(**CHULT_GRID)
         self.em = EntityManager()
@@ -453,13 +454,18 @@ class MainWindow(QMainWindow):
         )
 
     def _add_entity(self):
-        dlg = AddEntityDialog(self.grid.max_number, self)
+        dlg = AddEntityDialog(self.grid.max_number, self, player_name=self.player_name)
         if dlg.exec():
             v = dlg.get_values()
+            is_player = bool(
+                self.player_name
+                and v["name"].strip().lower() == self.player_name.strip().lower()
+            )
             e = Entity(
                 name=v["name"], node=v["node"], color=v["color"],
                 is_group=v["is_group"],
                 seafaring=v["seafaring"],
+                is_player=is_player,
             )
             self.em.add(e)
             self.canvas.reveal_hex(e.node)   # always reveal starting hex
@@ -623,6 +629,7 @@ class MainWindow(QMainWindow):
                     "members": list(e.members),
                     "seafaring": e.seafaring,
                     "flavor_text": e.flavor_text,
+                    "is_player": e.is_player,
                 }
                 for e in self.em.all
             ],
@@ -657,15 +664,22 @@ class MainWindow(QMainWindow):
             for e in self.em.all:
                 self.em.remove(e.id)
             for ed in data["entities"]:
+                name = ed["name"]
+                # Re-evaluate player flag against current character sheet name
+                is_player = bool(
+                    self.player_name
+                    and name.strip().lower() == self.player_name.strip().lower()
+                ) or ed.get("is_player", False)
                 self.em.add(
                     Entity(
-                        name=ed["name"],
+                        name=name,
                         node=ed["node"],
                         color=ed["color"],
                         is_group=ed.get("is_group", False),
                         members=list(ed.get("members", [])),
                         seafaring=ed.get("seafaring", False),
                         flavor_text=ed.get("flavor_text", ""),
+                        is_player=is_player,
                         id=ed["id"],
                     )
                 )
@@ -720,12 +734,13 @@ class MainWindow(QMainWindow):
                 tags.append("G")
             if e.seafaring:
                 tags.append("S")
+            player_mark = "★ " if getattr(e, "is_player", False) else ""
             prefix = f"[{'|'.join(tags)}] " if tags else ""
             cnt = f"  ({len(e.members)} mbr)" if e.is_group and e.members else ""
             acted = e.id in self.canvas._moved_ids
             bonus = (e.id == self._bonus_move_entity)
-            turn_mark = " ✓" if acted else (" ★" if bonus else "")
-            item = QListWidgetItem(f"{prefix}{e.name}{cnt}  → {e.node}{turn_mark}")
+            turn_mark = " ✓" if acted else (" ●" if bonus else "")
+            item = QListWidgetItem(f"{player_mark}{prefix}{e.name}{cnt}  → {e.node}{turn_mark}")
             item.setData(Qt.ItemDataRole.UserRole, e.id)
             color = QColor(e.color)
             if acted:

@@ -238,6 +238,16 @@ class HexMapCanvas(QGraphicsView):
                             cy - r - cbr.height() * 0.6)
                 chk.setZValue(7)
 
+            # Gold ★ above the circle for the player character
+            if getattr(entity, "is_player", False):
+                star_font = QFont()
+                star_font.setPointSize(max(6, int(self.grid.size * 0.24)))
+                star = self._scene.addText("★", star_font)
+                star.setDefaultTextColor(QColor(255, 210, 50, 230))
+                sbr = star.boundingRect()
+                star.setPos(cx - sbr.width() / 2, cy - r - sbr.height() * 0.85)
+                star.setZValue(8)
+
     # ------------------------------------------------------------------
     # Terrain fills  (z=0.5 fill, z=0.8 abbreviation label)
     # ------------------------------------------------------------------
