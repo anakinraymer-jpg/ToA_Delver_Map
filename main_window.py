@@ -137,8 +137,12 @@ class MainWindow(QMainWindow):
         wait_btn.clicked.connect(self._on_entity_wait)
         adv_btn = QPushButton("Advance Day")
         adv_btn.clicked.connect(self._advance_day_manual)
+        edit_day_btn = QPushButton("Edit")
+        edit_day_btn.setToolTip("Manually set the current day number")
+        edit_day_btn.clicked.connect(self._edit_day)
         day_btn_row.addWidget(wait_btn)
         day_btn_row.addWidget(adv_btn)
+        day_btn_row.addWidget(edit_day_btn)
         bots_btn = QPushButton("Move All Bots")
         bots_btn.setToolTip("Move every bot one step toward its target")
         bots_btn.clicked.connect(self._move_all_bots)
@@ -256,6 +260,15 @@ class MainWindow(QMainWindow):
         )
         il.addWidget(self.info_label)
 
+        # ── Group members ─────────────────────────────────────────────
+        self.members_group = QGroupBox("Group Members")
+        ml = QVBoxLayout(self.members_group)
+        self.members_list = QListWidget()
+        self.members_list.setMaximumHeight(90)
+        self.members_list.setWordWrap(True)
+        ml.addWidget(self.members_list)
+        self.members_group.setVisible(False)
+
         # ── Teleport toggle ───────────────────────────────────────────
         self.teleport_check = QCheckBox("Teleport Mode")
         self.teleport_check.stateChanged.connect(self._toggle_teleport)
@@ -305,6 +318,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(lg)
         layout.addWidget(tg)
         layout.addWidget(ig)
+        layout.addWidget(self.members_group)
         layout.addWidget(self.teleport_check)
         layout.addWidget(opacity_group)
         layout.addWidget(hint)
@@ -525,6 +539,14 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # Terrain actions
     # ------------------------------------------------------------------
+
+    def _edit_day(self):
+        val, ok = QInputDialog.getInt(
+            self, "Edit Day", "Set current day:", self.day, 1, 9999
+        )
+        if ok:
+            self.day = val
+            self._update_day_ui()
 
     def _on_weather_changed(self, _idx: int):
         self.current_weather = self.weather_combo.currentData() or ""
@@ -806,16 +828,9 @@ class MainWindow(QMainWindow):
         self._refresh_list()
         if entity:
             if entity.is_group:
-                mbr_names = ", ".join(
-                    self.em.get(mid).name
-                    for mid in entity.members
-                    if self.em.get(mid)
-                )
                 kind_line = f"Group ({len(entity.members)} members)"
-                mbr_line = f"\nMembers: {mbr_names}" if mbr_names else ""
             else:
                 kind_line = "Bot" if entity.is_bot else "Character"
-                mbr_line = ""
 
             # Trait badges
             traits = []
@@ -841,7 +856,7 @@ class MainWindow(QMainWindow):
             self.info_label.setText(
                 f"{kind_line}: {entity.name}\n"
                 f"Node: {entity.node}"
-                f"{trait_line}{mbr_line}{target_line}{flavor_line}"
+                f"{trait_line}{target_line}{flavor_line}"
             )
             for i in range(self.entity_list.count()):
                 item = self.entity_list.item(i)
@@ -850,6 +865,25 @@ class MainWindow(QMainWindow):
                     break
         else:
             self.info_label.setText("None")
+
+        # Populate group members list
+        self.members_list.clear()
+        if entity and entity.is_group:
+            self.members_group.setVisible(True)
+            for mid in entity.members:
+                m = self.em.get(mid)
+                if m:
+                    tags = []
+                    if m.is_bot:
+                        tags.append("BOT")
+                    if getattr(m, "seafaring", False):
+                        tags.append("Seafaring")
+                    label = m.name
+                    if tags:
+                        label += f"  [{', '.join(tags)}]"
+                    self.members_list.addItem(label)
+        else:
+            self.members_group.setVisible(False)
 
     def _on_move_requested(self, entity: Entity, target_node: int):
         is_bonus = (self._bonus_move_entity == entity.id)
