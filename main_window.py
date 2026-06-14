@@ -32,6 +32,18 @@ from PyQt6.QtWidgets import (
 CHULT_GRID = dict(size=87.0, origin=(150.0, 138.0), orientation="flat", cols=33, rows=39)
 CHULT_MAP_FILE = "chult_map.png"
 
+WEATHER_CONDITIONS: list[str] = [
+    "Misty",
+    "Heavy Mist",
+    "Dry and Sunny",
+    "Sunny with Rain Showers",
+    "Rainy",
+    "Heavy Rain",
+    "Tropical Storm",
+    "Extremely Warm",
+    "Monsoon Shift",
+]
+
 from PyQt6.QtWidgets import QInputDialog
 
 from canvas import HexMapCanvas
@@ -62,6 +74,7 @@ class MainWindow(QMainWindow):
         self.day: int = 1
         self._bonus_move_entity: Optional[str] = None   # ID of entity with unused bonus move
         self.tm = TerrainMap()
+        self.current_weather: str = ""
 
         self._build_ui()
         self._build_menu()
@@ -270,7 +283,24 @@ class MainWindow(QMainWindow):
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #999;")
 
+        # ── Weather ───────────────────────────────────────────────────────────
+        wg = QGroupBox("Weather")
+        wg_layout = QVBoxLayout(wg)
+        weather_row = QHBoxLayout()
+        self.weather_combo = QComboBox()
+        self.weather_combo.addItem("— None —", "")
+        for w in WEATHER_CONDITIONS:
+            self.weather_combo.addItem(w, w)
+        self.weather_combo.currentIndexChanged.connect(self._on_weather_changed)
+        roll_btn = QPushButton("Roll")
+        roll_btn.setToolTip("Randomly pick a weather condition for today")
+        roll_btn.clicked.connect(self._roll_weather)
+        weather_row.addWidget(self.weather_combo, 1)
+        weather_row.addWidget(roll_btn)
+        wg_layout.addLayout(weather_row)
+
         layout.addWidget(day_group)
+        layout.addWidget(wg)
         layout.addWidget(eg)
         layout.addWidget(lg)
         layout.addWidget(tg)
@@ -496,6 +526,14 @@ class MainWindow(QMainWindow):
     # Terrain actions
     # ------------------------------------------------------------------
 
+    def _on_weather_changed(self, _idx: int):
+        self.current_weather = self.weather_combo.currentData() or ""
+
+    def _roll_weather(self):
+        self.weather_combo.setCurrentIndex(
+            random.randint(1, len(WEATHER_CONDITIONS))   # skip index 0 ("— None —")
+        )
+
     def _on_terrain_type_changed(self, name: str):
         color = TERRAIN_COLORS.get(name, "#ffffff")
         self.terrain_swatch.setStyleSheet(
@@ -653,6 +691,7 @@ class MainWindow(QMainWindow):
             ],
             "locations": self.lm.to_list(),
             "terrain": self.tm.to_dict(),
+            "weather": self.current_weather,
         }
         with open(path, "w") as f:
             json.dump(data, f, indent=2)
@@ -713,6 +752,9 @@ class MainWindow(QMainWindow):
             for k, v in TerrainMap.from_dict(data.get("terrain", {}))._data.items():
                 self.tm.set(k, v)
             self.day = data.get("day", 1)
+            self.current_weather = data.get("weather", "")
+            idx = self.weather_combo.findData(self.current_weather)
+            self.weather_combo.setCurrentIndex(max(0, idx))
             self.canvas.clear_moved()
             self._bonus_move_entity = None
             self.canvas.set_selected(None)
