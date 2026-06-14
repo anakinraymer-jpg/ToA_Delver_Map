@@ -9,6 +9,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction, QColor
 from PyQt6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
@@ -30,6 +31,18 @@ from PyQt6.QtWidgets import (
 # Equal ~63 px margins all sides; 33 cols × 39 rows = 1 287 hex points
 CHULT_GRID = dict(size=87.0, origin=(150.0, 138.0), orientation="flat", cols=33, rows=39)
 CHULT_MAP_FILE = "chult_map.png"
+
+WEATHER_CONDITIONS: list[str] = [
+    "Misty",
+    "Heavy Mist",
+    "Dry and Sunny",
+    "Sunny with Rain Showers",
+    "Rainy",
+    "Heavy Rain",
+    "Tropical Storm",
+    "Extremely Warm",
+    "Monsoon Shift",
+]
 
 from PyQt6.QtWidgets import QInputDialog
 
@@ -59,6 +72,7 @@ class MainWindow(QMainWindow):
         self.lm = LocationManager()
         self.day: int = 1
         self._bonus_move_entity: Optional[str] = None   # ID of entity with unused bonus move
+        self.current_weather: str = ""
         self.tm = TerrainMap()
 
         self._build_ui()
@@ -128,6 +142,22 @@ class MainWindow(QMainWindow):
         dg.addWidget(self.day_label)
         dg.addWidget(self.day_progress_label)
         dg.addLayout(day_btn_row)
+
+        # ── Weather ───────────────────────────────────────────────────
+        wg = QGroupBox("Weather")
+        wg_layout = QVBoxLayout(wg)
+        weather_row = QHBoxLayout()
+        self.weather_combo = QComboBox()
+        self.weather_combo.addItem("— None —", "")
+        for w in WEATHER_CONDITIONS:
+            self.weather_combo.addItem(w, w)
+        self.weather_combo.currentIndexChanged.connect(self._on_weather_changed)
+        roll_btn = QPushButton("Roll")
+        roll_btn.setToolTip("Randomly pick a weather condition for today")
+        roll_btn.clicked.connect(self._roll_weather)
+        weather_row.addWidget(self.weather_combo, 1)
+        weather_row.addWidget(roll_btn)
+        wg_layout.addLayout(weather_row)
 
         # ── Characters & Groups ───────────────────────────────────────
         eg = QGroupBox("Characters & Groups")
@@ -210,6 +240,7 @@ class MainWindow(QMainWindow):
         hint.setStyleSheet("color: #999;")
 
         layout.addWidget(day_group)
+        layout.addWidget(wg)
         layout.addWidget(eg)
         layout.addWidget(lg)
         layout.addWidget(ig)
@@ -330,6 +361,14 @@ class MainWindow(QMainWindow):
         pct = round(value / 255 * 100)
         self.opacity_label.setText(f"Opacity: {pct}%")
         self.canvas.set_grid_opacity(value)
+
+    def _on_weather_changed(self, _idx: int):
+        self.current_weather = self.weather_combo.currentData() or ""
+
+    def _roll_weather(self):
+        self.weather_combo.setCurrentIndex(
+            random.randint(1, len(WEATHER_CONDITIONS))
+        )
 
     def _open_map(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -571,6 +610,7 @@ class MainWindow(QMainWindow):
             "locations": self.lm.to_list(),
             "terrain": self.tm.to_dict(),
             "fog_revealed": sorted(self.canvas._fog_revealed),
+            "weather": self.current_weather,
         }
         with open(path, "w") as f:
             json.dump(data, f, indent=2)
@@ -629,6 +669,9 @@ class MainWindow(QMainWindow):
             for k, v in TerrainMap.from_dict(data.get("terrain", {}))._data.items():
                 self.tm.set(k, v)
             self.day = data.get("day", 1)
+            self.current_weather = data.get("weather", "")
+            idx = self.weather_combo.findData(self.current_weather)
+            self.weather_combo.setCurrentIndex(max(0, idx))
             self.canvas.clear_moved()
             self._bonus_move_entity = None
             self.canvas.set_selected(None)
