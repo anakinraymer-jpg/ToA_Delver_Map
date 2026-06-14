@@ -111,7 +111,7 @@ class MainWindow(QMainWindow):
     def _build_panel(self) -> QWidget:
         # Outer fixed-width shell with a scroll area so all sections fit
         outer = QWidget()
-        outer.setFixedWidth(272)
+        outer.setFixedWidth(300)
         outer_layout = QVBoxLayout(outer)
         outer_layout.setContentsMargins(0, 0, 0, 0)
 
@@ -168,7 +168,6 @@ class MainWindow(QMainWindow):
         eg_layout = QVBoxLayout(eg)
         self.entity_list = QListWidget()
         self.entity_list.setMaximumHeight(130)
-        self.entity_list.setWordWrap(True)
         self.entity_list.itemClicked.connect(self._on_list_click)
         eg_layout.addWidget(self.entity_list)
         btn_row = QHBoxLayout()
@@ -191,7 +190,6 @@ class MainWindow(QMainWindow):
         lg_layout = QVBoxLayout(lg)
         self.location_list = QListWidget()
         self.location_list.setMaximumHeight(115)
-        self.location_list.setWordWrap(True)
         self.location_list.itemClicked.connect(self._on_location_list_click)
         lg_layout.addWidget(self.location_list)
         loc_btn_row = QHBoxLayout()
@@ -223,7 +221,6 @@ class MainWindow(QMainWindow):
         ml = QVBoxLayout(self.members_group)
         self.members_list = QListWidget()
         self.members_list.setMaximumHeight(90)
-        self.members_list.setWordWrap(True)
         ml.addWidget(self.members_list)
         self.members_group.setVisible(False)
 
