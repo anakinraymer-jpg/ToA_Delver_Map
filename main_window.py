@@ -472,6 +472,7 @@ class MainWindow(QMainWindow):
             self._refresh_locations()        # may expose a location
             self._refresh_list()
             self.canvas.refresh()
+            self._write_player_location()    # update IPC file if this is the player
 
     def _remove_selected_entity(self):
         item = self.entity_list.currentItem()
