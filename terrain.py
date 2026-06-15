@@ -15,7 +15,12 @@ TERRAINS: list[str] = [
     "Wasteland",
     "Grassland",
     "Ocean",
+    "Structure",
+    "Cave",
 ]
+
+# Terrain types that suppress the Druid wild bonus on the character sheet
+INDOOR_TERRAINS: frozenset[str] = frozenset({"Structure", "Cave"})
 
 # Hex fill colour for each terrain
 TERRAIN_COLORS: dict[str, str] = {
@@ -27,6 +32,8 @@ TERRAIN_COLORS: dict[str, str] = {
     "Wasteland": "#9c6b3a",   # dusty brown
     "Grassland": "#3db53d",   # bright meadow green
     "Ocean":     "#1a3f8c",   # deep navy
+    "Structure": "#b0886a",   # warm sandstone
+    "Cave":      "#4a3a52",   # dark purple-grey
 }
 
 # Alpha (0–255) applied to the fill — higher = more opaque
@@ -39,6 +46,8 @@ TERRAIN_ALPHA: dict[str, int] = {
     "Wasteland": 135,
     "Grassland": 115,
     "Ocean":     165,
+    "Structure": 160,
+    "Cave":      170,
 }
 
 # 3-letter abbreviation shown as a subtle watermark inside each painted hex
@@ -51,6 +60,8 @@ TERRAIN_ABBR: dict[str, str] = {
     "Wasteland": "WLD",
     "Grassland": "GRS",
     "Ocean":     "OCN",
+    "Structure": "STR",
+    "Cave":      "CAV",
 }
 
 

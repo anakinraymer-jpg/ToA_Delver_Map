@@ -642,6 +642,24 @@ class MainWindow(QMainWindow):
             json.dump(data, f, indent=2)
         self.status_bar.showMessage(f"Saved: {path}")
 
+    def _write_player_location(self) -> None:
+        """Write the player entity's hex node and terrain to the shared IPC file."""
+        player = next((e for e in self.em.all if getattr(e, "is_player", False)), None)
+        if player is None:
+            return
+        appdata = os.environ.get("APPDATA", "")
+        if not appdata:
+            return
+        folder = os.path.join(appdata, "ToA_CnS_CharacterSheet")
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, "player_location.json")
+        terrain = self.tm.get(player.node) or ""
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump({"node": player.node, "terrain": terrain}, f)
+        except OSError:
+            pass
+
     def _load_state(self):
         path, _ = QFileDialog.getOpenFileName(self, "Load State", "", "JSON (*.json)")
         if not path:
@@ -718,6 +736,7 @@ class MainWindow(QMainWindow):
             self._refresh_locations()
             self._update_day_ui()
             self.canvas.refresh()
+            self._write_player_location()
             self.status_bar.showMessage(f"Loaded: {path}")
         except Exception as exc:
             QMessageBox.critical(self, "Load Error", f"Could not load state:\n{exc}")
@@ -805,6 +824,8 @@ class MainWindow(QMainWindow):
         is_bonus = (self._bonus_move_entity == entity.id)
 
         self.em.move(entity.id, target_node)
+        if getattr(entity, "is_player", False):
+            self._write_player_location()
         self.canvas.reveal_hex(target_node)   # all movement reveals the hex
         self._refresh_locations()             # may expose a new location
         self._check_merge_opportunity(target_node, entity)
