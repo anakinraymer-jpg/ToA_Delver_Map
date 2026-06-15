@@ -525,6 +525,7 @@ class MainWindow(QMainWindow):
             self.lm.add(loc)
             self._refresh_locations()
             self.canvas.refresh()
+            self._write_player_location()
             self.status_bar.showMessage(f"Location '{loc.name}' placed at node {loc.node}.")
 
     def _remove_location(self):
@@ -538,6 +539,7 @@ class MainWindow(QMainWindow):
             self.canvas.set_highlighted_location(-1)
             self._refresh_locations()
             self.canvas.refresh()
+            self._write_player_location()
             self.status_bar.showMessage(f"Location '{loc.name}' removed.")
 
     def _edit_location(self):
@@ -566,6 +568,7 @@ class MainWindow(QMainWindow):
                            location_type=v["location_type"])
             self._refresh_locations()
             self.canvas.refresh()
+            self._write_player_location()
             self.status_bar.showMessage(f"Location '{v['name']}' updated.")
 
     def _refresh_locations(self):
@@ -643,7 +646,7 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(f"Saved: {path}")
 
     def _write_player_location(self) -> None:
-        """Write the player entity's hex node and terrain to the shared IPC file."""
+        """Write the player entity's hex node, terrain, and any named location to the shared IPC file."""
         player = next((e for e in self.em.all if getattr(e, "is_player", False)), None)
         if player is None:
             return
@@ -654,9 +657,15 @@ class MainWindow(QMainWindow):
         os.makedirs(folder, exist_ok=True)
         path = os.path.join(folder, "player_location.json")
         terrain = self.tm.get(player.node) or ""
+        loc = next((l for l in self.lm.all if l.node == player.node), None)
         try:
             with open(path, "w", encoding="utf-8") as f:
-                json.dump({"node": player.node, "terrain": terrain}, f)
+                json.dump({
+                    "node": player.node,
+                    "terrain": terrain,
+                    "location_name": loc.name if loc else "",
+                    "location_type": loc.location_type if loc else "",
+                }, f)
         except OSError:
             pass
 
