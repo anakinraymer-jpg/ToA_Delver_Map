@@ -120,6 +120,7 @@ class HexMapCanvas(QGraphicsView):
         self._draw_grid()
         self._draw_locations()
         self._draw_fog()
+        self._draw_fog_highlights()
         self._draw_bot_targets()
         self._draw_entities()
         self._draw_corner_handles()
@@ -325,6 +326,16 @@ class HexMapCanvas(QGraphicsView):
                             cy - r - cbr.height() * 0.6)
                 chk.setZValue(7)
 
+            if not entity.is_bot:
+                star_font = QFont()
+                star_font.setPointSize(max(6, int(self.grid.size * 0.24)))
+                star = self._scene.addText("★", star_font)
+                star.setDefaultTextColor(QColor(255, 210, 50, 230))
+                sbr = star.boundingRect()
+                star.setPos(cx - sbr.width() / 2,
+                            cy - r - sbr.height() * 0.85)
+                star.setZValue(7)
+
     # ------------------------------------------------------------------
     # Terrain fills  (z=0.5 fill, z=0.8 abbreviation label)
     # ------------------------------------------------------------------
@@ -400,6 +411,26 @@ class HexMapCanvas(QGraphicsView):
             corners = self.grid.corners(cell.q, cell.r)
             poly = QPolygonF([QPointF(x, y) for x, y in corners])
             self._scene.addPolygon(poly, pen, brush).setZValue(4.9)
+
+    # ------------------------------------------------------------------
+    # Fog highlights  (z=4.95 — above fog, below entities)
+    # ------------------------------------------------------------------
+
+    def _draw_fog_highlights(self):
+        if not self.fog_enabled or not self._valid_targets:
+            return
+        op = self.grid_opacity
+        pen   = QPen(QColor(80, 200, 80, min(255, op + 60)), 2)
+        brush = QBrush(QColor(80, 200, 80, min(255, op // 3)))
+        for node in self._valid_targets:
+            if node in self._fog_revealed:
+                continue
+            cell = self.grid.cell_by_number(node)
+            if cell is None:
+                continue
+            corners = self.grid.corners(cell.q, cell.r)
+            poly = QPolygonF([QPointF(x, y) for x, y in corners])
+            self._scene.addPolygon(poly, pen, brush).setZValue(4.95)
 
     # ------------------------------------------------------------------
     # Location markers  (z=3 diamonds, z=4 name labels)
