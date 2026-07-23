@@ -27,6 +27,7 @@ class HexMapCanvas(QGraphicsView):
     move_requested              = pyqtSignal(object, int)   # entity, target_node
     origin_clicked              = pyqtSignal(float, float)  # x, y scene coords
     right_clicked_entity        = pyqtSignal(object)        # Entity (for edit dialog)
+    right_clicked_hex           = pyqtSignal(int)           # node of empty hex right-click
     hex_toggled_in_reveal_mode  = pyqtSignal(int, bool)     # node, is_now_revealed
     hex_curse_toggled           = pyqtSignal(int, bool, str)  # node, is_set, level
 
@@ -687,6 +688,8 @@ class HexMapCanvas(QGraphicsView):
                     if here:
                         self.right_clicked_entity.emit(here[0])
                         return
+                    self.right_clicked_hex.emit(cell.number)
+                    return
             self.set_selected(None)
             return
 

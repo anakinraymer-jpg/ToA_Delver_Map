@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -32,6 +33,7 @@ from PyQt6.QtWidgets import (
 # Equal ~63 px margins all sides; 33 cols × 39 rows = 1 287 hex points
 CHULT_GRID = dict(size=87.0, origin=(150.0, 138.0), orientation="flat", cols=33, rows=39)
 CHULT_MAP_FILE = "chult_map.png"
+PREFS_FILE = "map_prefs.json"
 
 WEATHER_CONDITIONS: list[str] = [
     "Misty",
@@ -83,6 +85,7 @@ class MainWindow(QMainWindow):
         self._awaiting_dm_chord: bool = False
         self.tm = TerrainMap()
         self.current_weather: str = ""
+        self._last_map_path: str = ""
 
         self._build_ui()
         self._build_menu()
@@ -105,6 +108,7 @@ class MainWindow(QMainWindow):
         self.canvas.move_requested.connect(self._on_move_requested)
         self.canvas.origin_clicked.connect(self._on_origin_clicked)
         self.canvas.right_clicked_entity.connect(self._on_right_click_entity)
+        self.canvas.right_clicked_hex.connect(self._on_right_click_hex)
         self.canvas.hex_toggled_in_reveal_mode.connect(self._on_hex_reveal_toggled)
         self.canvas.hex_curse_toggled.connect(self._on_hex_curse_toggled)
         self.canvas.installEventFilter(self)
@@ -529,14 +533,53 @@ class MainWindow(QMainWindow):
     # Actions
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # Preferences  (last map image + last save file)
+    # ------------------------------------------------------------------
+
+    def _load_prefs(self) -> dict:
+        try:
+            with open(PREFS_FILE) as f:
+                return json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {}
+
+    def _save_prefs(self, **kwargs):
+        prefs = self._load_prefs()
+        prefs.update(kwargs)
+        try:
+            with open(PREFS_FILE, "w") as f:
+                json.dump(prefs, f, indent=2)
+        except OSError:
+            pass
+
     def _auto_load_map(self):
         self._update_day_ui()
-        if os.path.isfile(CHULT_MAP_FILE):
-            self.canvas.load_image(CHULT_MAP_FILE)
+        prefs = self._load_prefs()
+
+        # Try to restore last session from save file
+        last_save = prefs.get("last_save", "")
+        if last_save and os.path.isfile(last_save):
+            try:
+                with open(last_save) as f:
+                    data = json.load(f)
+                self._apply_state_dict(data)
+                self.status_bar.showMessage(f"Auto-loaded: {last_save}")
+                return
+            except Exception:
+                pass
+
+        # Fall back to just loading the last map image (or the default Chult map)
+        map_path = prefs.get("last_map", CHULT_MAP_FILE)
+        if map_path and os.path.isfile(map_path):
+            self._last_map_path = map_path
+            self.canvas.load_image(map_path)
             self.status_bar.showMessage(
-                f"Chult map loaded  |  {self.grid.max_number} hex points  "
+                f"Map loaded  |  {self.grid.max_number} hex points  "
                 f"({self.grid.cols} cols × {self.grid.rows} rows, size {int(self.grid.size)} px)"
             )
+        else:
+            self.status_bar.showMessage("Open a map image to begin  (File → Open Map Image)")
 
     def _on_opacity_changed(self, value: int):
         pct = round(value / 255 * 100)
@@ -551,7 +594,9 @@ class MainWindow(QMainWindow):
             "Images (*.png *.jpg *.jpeg *.bmp *.gif *.tiff *.webp)",
         )
         if path:
+            self._last_map_path = path
             self.canvas.load_image(path)
+            self._save_prefs(last_map=path)
             self.status_bar.showMessage(f"Map loaded: {path}")
 
     def _grid_settings(self):
@@ -743,7 +788,10 @@ class MainWindow(QMainWindow):
             return
         except ValueError:
             pass
-        matches = [loc for loc in self.lm.all if text.lower() in loc.name.lower()]
+        candidates = self.lm.all
+        if self.canvas.fog_enabled and not self._dm_mode:
+            candidates = [loc for loc in candidates if loc.node in self.canvas._fog_revealed]
+        matches = [loc for loc in candidates if text.lower() in loc.name.lower()]
         if matches:
             loc = matches[0]
             self.canvas.center_on_node(loc.node)
@@ -923,6 +971,7 @@ class MainWindow(QMainWindow):
         if not path:
             return
         data = {
+            "map_image": self._last_map_path,
             "day": self.day,
             "grid": {
                 "size": self.grid.size,
@@ -960,7 +1009,81 @@ class MainWindow(QMainWindow):
         }
         with open(path, "w") as f:
             json.dump(data, f, indent=2)
+        self._save_prefs(last_save=path)
         self.status_bar.showMessage(f"Saved: {path}")
+
+    def _apply_state_dict(self, data: dict):
+        """Apply a loaded state dict to all managers and the canvas."""
+        g = data["grid"]
+        self.grid.reconfigure(
+            size=g["size"],
+            origin=tuple(g["origin"]),
+            orientation=g["orientation"],
+            cols=g["cols"],
+            rows=g["rows"],
+        )
+        wc = g.get("warp_corners")
+        if wc is not None:
+            self.grid.set_warp_corners(*[tuple(c) for c in wc])
+        for e in self.em.all:
+            self.em.remove(e.id)
+        for ed in data["entities"]:
+            self.em.add(
+                Entity(
+                    name=ed["name"],
+                    node=ed["node"],
+                    color=ed["color"],
+                    is_group=ed.get("is_group", False),
+                    is_bot=ed.get("is_bot", False),
+                    members=list(ed.get("members", [])),
+                    seafaring=ed.get("seafaring", False),
+                    bot_target=ed.get("bot_target"),
+                    flavor_text=ed.get("flavor_text", ""),
+                    id=ed["id"],
+                )
+            )
+        for loc in list(self.lm.all):
+            self.lm.remove(loc.id)
+        for ld in data.get("locations", []):
+            self.lm.add(
+                Location(
+                    name=ld["name"],
+                    node=ld["node"],
+                    color=ld.get("color", "#f39c12"),
+                    description=ld.get("description", ""),
+                    location_type=ld.get("location_type", ""),
+                    curse_level=ld.get("curse_level", ""),
+                    id=ld["id"],
+                )
+            )
+        self.tm.clear_all()
+        for k, v in TerrainMap.from_dict(data.get("terrain", {}))._data.items():
+            self.tm.set(k, v)
+        self.cm.from_dict(data.get("curses", {}))
+        fog_data = data.get("fog_revealed", [])
+        self.canvas._fog_revealed = set(fog_data)
+        for e in self.em.all:
+            self.canvas._fog_revealed.add(e.node)
+        self.canvas.fog_enabled = data.get("fog_enabled", bool(fog_data))
+        self.fog_check.setChecked(self.canvas.fog_enabled)
+        self.day = data.get("day", 1)
+        self.current_weather = data.get("weather", "")
+        idx = self.weather_combo.findData(self.current_weather)
+        self.weather_combo.setCurrentIndex(max(0, idx))
+        self.canvas.clear_moved()
+        self._bonus_move_entity = None
+        self._advance_day_after_bonus_move = False
+        self.canvas.set_selected(None)
+        self.canvas.set_highlighted_location(-1)
+        self._refresh_list()
+        self._refresh_locations()
+        self._update_day_ui()
+        # Load the saved map image if present and accessible
+        map_image = data.get("map_image", "")
+        if map_image and os.path.isfile(map_image):
+            self._last_map_path = map_image
+            self.canvas.load_image(map_image)
+        self.canvas.refresh()
 
     def _load_state(self):
         path, _ = QFileDialog.getOpenFileName(self, "Load State", "", "JSON (*.json)")
@@ -969,75 +1092,8 @@ class MainWindow(QMainWindow):
         try:
             with open(path) as f:
                 data = json.load(f)
-            g = data["grid"]
-            self.grid.reconfigure(
-                size=g["size"],
-                origin=tuple(g["origin"]),
-                orientation=g["orientation"],
-                cols=g["cols"],
-                rows=g["rows"],
-            )
-            # Restore warp corners AFTER reconfigure() (which resets them)
-            wc = g.get("warp_corners")
-            if wc is not None:
-                self.grid.set_warp_corners(*[tuple(c) for c in wc])
-            for e in self.em.all:
-                self.em.remove(e.id)
-            for ed in data["entities"]:
-                self.em.add(
-                    Entity(
-                        name=ed["name"],
-                        node=ed["node"],
-                        color=ed["color"],
-                        is_group=ed.get("is_group", False),
-                        is_bot=ed.get("is_bot", False),
-                        members=list(ed.get("members", [])),
-                        seafaring=ed.get("seafaring", False),
-                        bot_target=ed.get("bot_target"),
-                        flavor_text=ed.get("flavor_text", ""),
-                        id=ed["id"],
-                    )
-                )
-            # Reload locations (mutate in-place so canvas ref stays valid)
-            for loc in list(self.lm.all):
-                self.lm.remove(loc.id)
-            for ld in data.get("locations", []):
-                self.lm.add(
-                    Location(
-                        name=ld["name"],
-                        node=ld["node"],
-                        color=ld.get("color", "#f39c12"),
-                        description=ld.get("description", ""),
-                        location_type=ld.get("location_type", ""),
-                        id=ld["id"],
-                    )
-                )
-            # Restore terrain (mutate in-place so canvas ref stays valid)
-            self.tm.clear_all()
-            for k, v in TerrainMap.from_dict(data.get("terrain", {}))._data.items():
-                self.tm.set(k, v)
-            # Restore curses
-            self.cm.from_dict(data.get("curses", {}))
-            # Restore fog — then also reveal all entity positions
-            fog_data = data.get("fog_revealed", [])
-            self.canvas._fog_revealed = set(fog_data)
-            for e in self.em.all:
-                self.canvas._fog_revealed.add(e.node)
-            self.canvas.fog_enabled = data.get("fog_enabled", bool(fog_data))
-            self.fog_check.setChecked(self.canvas.fog_enabled)
-            self.day = data.get("day", 1)
-            self.current_weather = data.get("weather", "")
-            idx = self.weather_combo.findData(self.current_weather)
-            self.weather_combo.setCurrentIndex(max(0, idx))
-            self.canvas.clear_moved()
-            self._bonus_move_entity = None
-            self._advance_day_after_bonus_move = False
-            self.canvas.set_selected(None)
-            self.canvas.set_highlighted_location(-1)
-            self._refresh_list()
-            self._refresh_locations()
-            self._update_day_ui()
-            self.canvas.refresh()
+            self._apply_state_dict(data)
+            self._save_prefs(last_save=path)
             self.status_bar.showMessage(f"Loaded: {path}")
         except Exception as exc:
             QMessageBox.critical(self, "Load Error", f"Could not load state:\n{exc}")
@@ -1666,6 +1722,31 @@ class MainWindow(QMainWindow):
             self._edit_group(entity)
         else:
             self._edit_individual(entity)
+
+    def _on_right_click_hex(self, node: int):
+        """Terrain context menu on right-click of an empty hex."""
+        from PyQt6.QtGui import QCursor
+        current = self.tm.get(node)
+        menu = QMenu(self)
+        actions = {}
+        for t in TERRAINS:
+            act = menu.addAction(t)
+            act.setCheckable(True)
+            act.setChecked(t == current)
+            actions[act] = t
+        menu.addSeparator()
+        clear_act = menu.addAction("Clear Terrain")
+        chosen = menu.exec(QCursor.pos())
+        if chosen is None:
+            return
+        if chosen is clear_act:
+            self.tm.clear(node)
+            self.status_bar.showMessage(f"Terrain cleared on hex {node}.")
+        else:
+            terrain = actions[chosen]
+            self.tm.set(node, terrain)
+            self.status_bar.showMessage(f"Hex {node}: terrain set to {terrain}.")
+        self.canvas.refresh()
 
     def _edit_individual(self, entity: Entity):
         dlg = EditEntityDialog(entity, self, lm=self.lm, max_node=self.grid.max_number)

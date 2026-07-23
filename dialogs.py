@@ -317,9 +317,10 @@ class EditGroupDialog(QDialog):
 
         # Local working copies — not applied until OK
         self._members: list[str] = list(group.members)
-        # Available = top-level entities at the group's node (not the group itself)
+        # Available = all non-group top-level entities not already in this group
         self._available: list[str] = [
-            e.id for e in em.at_node(group.node) if e.id != group.id
+            e.id for e in em.toplevel
+            if e.id != group.id and not e.is_group and e.id not in self._members
         ]
 
         # Internal storage for the resolved target node
@@ -352,7 +353,7 @@ class EditGroupDialog(QDialog):
         remove_btn.clicked.connect(self._remove_member)
         ml.addWidget(remove_btn)
 
-        avail_box = QGroupBox("On Same Hex")
+        avail_box = QGroupBox("Available Entities")
         al = QVBoxLayout(avail_box)
         self.avail_list = QListWidget()
         al.addWidget(self.avail_list)
