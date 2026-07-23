@@ -15,6 +15,7 @@ class Location:
     color: str = "#f39c12"          # amber default
     description: str = ""
     location_type: str = ""         # one of LOCATION_TYPES or "" for untyped
+    curse_level: str = ""           # "Lesser Curse", "Greater Curse", or ""
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
 
@@ -65,6 +66,7 @@ class LocationManager:
                 "color": l.color,
                 "description": l.description,
                 "location_type": l.location_type,
+                "curse_level": l.curse_level,
             }
             for l in self.all
         ]
@@ -79,6 +81,7 @@ class LocationManager:
                 color=d.get("color", "#f39c12"),
                 description=d.get("description", ""),
                 location_type=d.get("location_type", ""),
+                curse_level=d.get("curse_level", ""),
                 id=d["id"],
             ))
         return lm

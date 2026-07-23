@@ -1,5 +1,6 @@
 from typing import Optional
 
+from curse import CURSE_LEVELS
 from locations import LOCATION_TYPES
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor
@@ -614,6 +615,11 @@ class AddLocationDialog(QDialog):
         for t in LOCATION_TYPES:
             self.type_combo.addItem(t, t)
 
+        self.curse_combo = QComboBox()
+        self.curse_combo.addItem("— None —", "")
+        for cl in CURSE_LEVELS:
+            self.curse_combo.addItem(cl, cl)
+
         self.node_spin = QSpinBox()
         self.node_spin.setRange(1, max_node)
         self.node_spin.setValue(preset_node)
@@ -634,6 +640,7 @@ class AddLocationDialog(QDialog):
 
         layout.addRow("Name:", self.name_edit)
         layout.addRow("Type:", self.type_combo)
+        layout.addRow("Curse:", self.curse_combo)
         layout.addRow("Hex Node:", self.node_spin)
         layout.addRow("Description:", self.desc_edit)
         layout.addRow("Color:", color_row)
@@ -664,4 +671,5 @@ class AddLocationDialog(QDialog):
             "color": self._color,
             "description": self.desc_edit.toPlainText().strip(),
             "location_type": self.type_combo.currentData(),
+            "curse_level": self.curse_combo.currentData() or "",
         }

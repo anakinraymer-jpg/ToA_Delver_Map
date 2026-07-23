@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
@@ -42,11 +43,14 @@ WEATHER_CONDITIONS: list[str] = [
     "Tropical Storm",
     "Extremely Warm",
     "Monsoon Shift",
+    "Extremely Warm and Rainy",
+    "Extremely Warm and Dry",
 ]
 
 from PyQt6.QtWidgets import QInputDialog
 
 from canvas import HexMapCanvas
+from curse import CURSE_LEVELS, GREATER_CURSE, LESSER_CURSE, CurseMap
 from dialogs import (
     AddEntityDialog,
     AddLocationDialog,
@@ -71,8 +75,12 @@ class MainWindow(QMainWindow):
         self.grid = HexGrid(**CHULT_GRID)
         self.em = EntityManager()
         self.lm = LocationManager()
+        self.cm = CurseMap()
         self.day: int = 1
-        self._bonus_move_entity: Optional[str] = None   # ID of entity with unused bonus move
+        self._bonus_move_entity: Optional[str] = None
+        self._advance_day_after_bonus_move: bool = False
+        self._dm_mode: bool = False
+        self._awaiting_dm_chord: bool = False
         self.tm = TerrainMap()
         self.current_weather: str = ""
 
@@ -92,12 +100,15 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        self.canvas = HexMapCanvas(self.grid, self.em, self.lm, self.tm)
+        self.canvas = HexMapCanvas(self.grid, self.em, self.lm, self.tm, self.cm)
         self.canvas.entity_selected.connect(self._on_entity_selected)
         self.canvas.move_requested.connect(self._on_move_requested)
         self.canvas.origin_clicked.connect(self._on_origin_clicked)
         self.canvas.right_clicked_entity.connect(self._on_right_click_entity)
-        self._grid_dlg = None  # holds open GridSettingsDialog for live updates
+        self.canvas.hex_toggled_in_reveal_mode.connect(self._on_hex_reveal_toggled)
+        self.canvas.hex_curse_toggled.connect(self._on_hex_curse_toggled)
+        self.canvas.installEventFilter(self)
+        self._grid_dlg = None
 
         panel = self._build_panel()
 
@@ -146,10 +157,14 @@ class MainWindow(QMainWindow):
         bots_btn = QPushButton("Move All Bots")
         bots_btn.setToolTip("Move every bot one step toward its target")
         bots_btn.clicked.connect(self._move_all_bots)
+        reset_fog_btn = QPushButton("Reset Fog")
+        reset_fog_btn.setToolTip("Clear all fog — re-add entity positions as revealed")
+        reset_fog_btn.clicked.connect(self._reset_fog)
         dg.addWidget(self.day_label)
         dg.addWidget(self.day_progress_label)
         dg.addLayout(day_btn_row)
         dg.addWidget(bots_btn)
+        dg.addWidget(reset_fog_btn)
 
         # ── Characters & Groups ───────────────────────────────────────
         eg = QGroupBox("Characters & Groups")
@@ -248,6 +263,38 @@ class MainWindow(QMainWindow):
         # Initialise swatch to the first terrain
         self._on_terrain_type_changed(TERRAINS[0])
 
+        # ── DM Tools (curse paint — hidden until DM Mode active) ─────
+        self.dm_tools_group = QGroupBox("DM Tools")
+        dt_layout = QVBoxLayout(self.dm_tools_group)
+        curse_label = QLabel("Curse Paint:")
+        curse_label.setStyleSheet("font-size: 9pt;")
+        dt_layout.addWidget(curse_label)
+        curse_btn_row = QHBoxLayout()
+        self.lesser_curse_btn = QPushButton("Lesser")
+        self.lesser_curse_btn.setCheckable(True)
+        self.lesser_curse_btn.setStyleSheet(
+            "QPushButton:checked { background: #50c878; color: black; }"
+        )
+        self.lesser_curse_btn.toggled.connect(
+            lambda chk: self._on_curse_paint_toggled(chk, LESSER_CURSE)
+        )
+        self.greater_curse_btn = QPushButton("Greater")
+        self.greater_curse_btn.setCheckable(True)
+        self.greater_curse_btn.setStyleSheet(
+            "QPushButton:checked { background: #006e00; color: white; }"
+        )
+        self.greater_curse_btn.toggled.connect(
+            lambda chk: self._on_curse_paint_toggled(chk, GREATER_CURSE)
+        )
+        curse_btn_row.addWidget(self.lesser_curse_btn)
+        curse_btn_row.addWidget(self.greater_curse_btn)
+        dt_layout.addLayout(curse_btn_row)
+        clear_curse_btn = QPushButton("Clear Curse Hex")
+        clear_curse_btn.setToolTip("Remove curse from the selected entity's hex")
+        clear_curse_btn.clicked.connect(self._clear_selected_curse)
+        dt_layout.addWidget(clear_curse_btn)
+        self.dm_tools_group.setVisible(False)
+
         # ── Selected info ─────────────────────────────────────────────
         ig = QGroupBox("Selected")
         il = QVBoxLayout(ig)
@@ -273,6 +320,25 @@ class MainWindow(QMainWindow):
         self.teleport_check = QCheckBox("Teleport Mode")
         self.teleport_check.stateChanged.connect(self._toggle_teleport)
 
+        # ── Fog of War toggle ─────────────────────────────────────────
+        self.fog_check = QCheckBox("Fog of War")
+        self.fog_check.setToolTip("Show/hide fog overlay on unexplored hexes")
+        self.fog_check.stateChanged.connect(self._toggle_fog)
+
+        # ── Reveal Mode toggle ────────────────────────────────────────
+        self.reveal_check = QCheckBox("Reveal Mode  (click/drag hexes)")
+        self.reveal_check.setToolTip(
+            "Click or drag on the map to reveal/conceal individual hexes"
+        )
+        self.reveal_check.stateChanged.connect(self._toggle_reveal_mode)
+
+        # ── Custom Move Range toggle ───────────────────────────────────
+        self.custom_move_check = QCheckBox("Custom Move Range")
+        self.custom_move_check.setToolTip(
+            "Set a custom BFS step range instead of 1-hex neighbours"
+        )
+        self.custom_move_check.stateChanged.connect(self._toggle_custom_move)
+
         # ── Grid opacity ──────────────────────────────────────────────
         opacity_group = QGroupBox("Grid Overlay")
         og = QVBoxLayout(opacity_group)
@@ -284,13 +350,25 @@ class MainWindow(QMainWindow):
         og.addWidget(self.opacity_label)
         og.addWidget(self.opacity_slider)
 
+        # ── Hex Search ────────────────────────────────────────────────
+        search_group = QGroupBox("Hex Search")
+        sg_layout = QHBoxLayout(search_group)
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("Node # or location name")
+        self.search_edit.returnPressed.connect(self._do_search)
+        search_go_btn = QPushButton("Go")
+        search_go_btn.clicked.connect(self._do_search)
+        sg_layout.addWidget(self.search_edit, 1)
+        sg_layout.addWidget(search_go_btn)
+
         hint = QLabel(
             "<small>"
             "<b>Map:</b> left-click to select/move · right-click to edit<br>"
             "<b>Pan/Zoom:</b> middle-drag · scroll wheel<br>"
-            "<b>Paint:</b> click/drag to paint · Shift+click to flood-fill<br>"
-            "Right-click to erase · Shift+right-click to flood-erase<br>"
-            "<b>Keys:</b> W = Wait · P = Paint · Del = Clear terrain hex"
+            "<b>Paint:</b> click/drag · Shift+click to flood-fill<br>"
+            "Right-click to erase · Shift+right to flood-erase<br>"
+            "<b>Keys:</b> W = Wait · P = Paint · Del = Clear terrain hex<br>"
+            "<b>DM Mode:</b> Ctrl+D then M"
             "</small>"
         )
         hint.setWordWrap(True)
@@ -317,10 +395,15 @@ class MainWindow(QMainWindow):
         layout.addWidget(eg)
         layout.addWidget(lg)
         layout.addWidget(tg)
+        layout.addWidget(self.dm_tools_group)
         layout.addWidget(ig)
         layout.addWidget(self.members_group)
         layout.addWidget(self.teleport_check)
+        layout.addWidget(self.fog_check)
+        layout.addWidget(self.reveal_check)
+        layout.addWidget(self.custom_move_check)
         layout.addWidget(opacity_group)
+        layout.addWidget(search_group)
         layout.addWidget(hint)
         layout.addStretch()
 
@@ -360,6 +443,17 @@ class MainWindow(QMainWindow):
         grid_act = QAction("Grid Settings…", self)
         grid_act.triggered.connect(self._grid_settings)
         map_menu.addAction(grid_act)
+
+        dm_act = QAction("Toggle DM Mode  [Ctrl+D, M]", self)
+        dm_act.triggered.connect(self._toggle_dm_mode)
+        map_menu.addAction(dm_act)
+        map_menu.addSeparator()
+
+        # Ctrl+D half of the chord — sets awaiting flag
+        ctrl_d_act = QAction(self)
+        ctrl_d_act.setShortcut("Ctrl+D")
+        ctrl_d_act.triggered.connect(lambda: setattr(self, "_awaiting_dm_chord", True))
+        self.addAction(ctrl_d_act)
 
         origin_act = QAction("Set Origin by Click", self)
         origin_act.setShortcut("Ctrl+Shift+O")
@@ -414,6 +508,22 @@ class MainWindow(QMainWindow):
         desel_act.setShortcut("Escape")
         desel_act.triggered.connect(lambda: self.canvas.set_selected(None))
         tb.addAction(desel_act)
+
+    # ------------------------------------------------------------------
+    # Event filter (for DM mode Ctrl+D→M chord)
+    # ------------------------------------------------------------------
+
+    def eventFilter(self, obj, event):
+        from PyQt6.QtCore import QEvent
+        if obj is self.canvas and event.type() == QEvent.Type.KeyPress:
+            if self._awaiting_dm_chord:
+                self._awaiting_dm_chord = False
+                if event.key() == Qt.Key.Key_M and not event.modifiers():
+                    self._toggle_dm_mode()
+                    return True
+            else:
+                self._awaiting_dm_chord = False
+        return super().eventFilter(obj, event)
 
     # ------------------------------------------------------------------
     # Actions
@@ -536,6 +646,118 @@ class MainWindow(QMainWindow):
         self.canvas.set_teleport(enabled)
         self.status_bar.showMessage("Teleport mode " + ("ON" if enabled else "OFF") + ".")
 
+    def _toggle_fog(self, state):
+        self.canvas.fog_enabled = bool(state)
+        self.canvas.refresh()
+        self.status_bar.showMessage("Fog of War " + ("ON" if state else "OFF") + ".")
+
+    def _toggle_reveal_mode(self, state):
+        enabled = bool(state)
+        if enabled:
+            # Enable fog when entering reveal mode
+            if not self.canvas.fog_enabled:
+                self.canvas.fog_enabled = True
+                self.fog_check.setChecked(True)
+            self.teleport_check.setChecked(False)
+            self.custom_move_check.setChecked(False)
+        self.canvas.set_reveal_mode(enabled)
+        self.status_bar.showMessage("Reveal Mode " + ("ON — click/drag to reveal hexes." if enabled else "OFF."))
+
+    def _toggle_custom_move(self, state):
+        if state:
+            n, ok = QInputDialog.getInt(
+                self, "Custom Move Range",
+                "Number of hex steps for BFS range:", 2, 1, 20
+            )
+            if ok:
+                self.teleport_check.setChecked(False)
+                self.reveal_check.setChecked(False)
+                self.canvas.set_custom_move_range(n)
+                self.status_bar.showMessage(f"Custom Move Range: {n} steps.")
+            else:
+                self.custom_move_check.setChecked(False)
+        else:
+            self.canvas.set_custom_move_range(0)
+            self.status_bar.showMessage("Custom Move Range: OFF.")
+
+    def _toggle_dm_mode(self):
+        self._dm_mode = not self._dm_mode
+        self.canvas.dm_mode = self._dm_mode
+        self._refresh_dm_tools()
+        self.canvas.refresh()
+        state = "ON" if self._dm_mode else "OFF"
+        self.status_bar.showMessage(f"DM Mode {state}.")
+
+    def _refresh_dm_tools(self):
+        self.dm_tools_group.setVisible(self._dm_mode)
+        if not self._dm_mode:
+            if self.lesser_curse_btn.isChecked():
+                self.lesser_curse_btn.setChecked(False)
+            if self.greater_curse_btn.isChecked():
+                self.greater_curse_btn.setChecked(False)
+            self.canvas.set_curse_paint("")
+
+    def _on_curse_paint_toggled(self, checked: bool, level: str):
+        if checked:
+            # Mutual exclusion
+            other = self.greater_curse_btn if level == LESSER_CURSE else self.lesser_curse_btn
+            if other.isChecked():
+                other.setChecked(False)
+            self.canvas.set_curse_paint(level)
+            self.status_bar.showMessage(f"Curse Paint: {level} — click/drag to paint, right-click to erase.")
+        else:
+            if not self.lesser_curse_btn.isChecked() and not self.greater_curse_btn.isChecked():
+                self.canvas.set_curse_paint("")
+                self.status_bar.showMessage("Curse Paint: OFF.")
+
+    def _clear_selected_curse(self):
+        sel = self.canvas._selected_entity
+        if sel:
+            self.cm.clear(sel.node)
+            self.canvas.refresh()
+            self.status_bar.showMessage(f"Curse cleared at node {sel.node}.")
+        else:
+            self.status_bar.showMessage("Select an entity first to clear the curse on its hex.")
+
+    def _reset_fog(self):
+        self.canvas._fog_revealed.clear()
+        for e in self.em.toplevel:
+            self.canvas._fog_revealed.add(e.node)
+        self.canvas.fog_enabled = True
+        self.fog_check.setChecked(True)
+        self.canvas.refresh()
+        self.status_bar.showMessage("Fog reset — only entity positions are revealed.")
+
+    def _do_search(self):
+        text = self.search_edit.text().strip()
+        if not text:
+            return
+        try:
+            node = int(text)
+            self.canvas.center_on_node(node)
+            self.status_bar.showMessage(f"Centered on node {node}.")
+            return
+        except ValueError:
+            pass
+        matches = [loc for loc in self.lm.all if text.lower() in loc.name.lower()]
+        if matches:
+            loc = matches[0]
+            self.canvas.center_on_node(loc.node)
+            self.canvas.set_highlighted_location(loc.node)
+            self.status_bar.showMessage(f"Found '{loc.name}' at node {loc.node}.")
+        else:
+            self.status_bar.showMessage(f"No location found matching '{text}'.")
+
+    def _on_hex_reveal_toggled(self, node: int, is_revealed: bool):
+        action = "Revealed" if is_revealed else "Concealed"
+        self.status_bar.showMessage(f"Hex {node}: {action}.")
+
+    def _on_hex_curse_toggled(self, node: int, is_set: bool, level: str):
+        if is_set:
+            self.status_bar.showMessage(f"Hex {node}: {level} applied.")
+        else:
+            self.status_bar.showMessage(f"Hex {node}: Curse cleared.")
+
     # ------------------------------------------------------------------
     # Terrain actions
     # ------------------------------------------------------------------
@@ -602,6 +824,7 @@ class MainWindow(QMainWindow):
                 name=v["name"], node=v["node"],
                 color=v["color"], description=v["description"],
                 location_type=v["location_type"],
+                curse_level=v.get("curse_level", ""),
             )
             self.lm.add(loc)
             self._refresh_locations()
@@ -640,11 +863,15 @@ class MainWindow(QMainWindow):
         idx = dlg.type_combo.findData(loc.location_type)
         if idx >= 0:
             dlg.type_combo.setCurrentIndex(idx)
+        cidx = dlg.curse_combo.findData(loc.curse_level)
+        if cidx >= 0:
+            dlg.curse_combo.setCurrentIndex(cidx)
         if dlg.exec():
             v = dlg.get_values()
             self.lm.update(lid, name=v["name"], node=v["node"],
                            color=v["color"], description=v["description"],
-                           location_type=v["location_type"])
+                           location_type=v["location_type"],
+                           curse_level=v.get("curse_level", ""))
             self._refresh_locations()
             self.canvas.refresh()
             self.status_bar.showMessage(f"Location '{v['name']}' updated.")
@@ -713,6 +940,9 @@ class MainWindow(QMainWindow):
             ],
             "locations": self.lm.to_list(),
             "terrain": self.tm.to_dict(),
+            "curses": self.cm.to_dict(),
+            "fog_enabled": self.canvas.fog_enabled,
+            "fog_revealed": sorted(self.canvas._fog_revealed),
             "weather": self.current_weather,
         }
         with open(path, "w") as f:
@@ -773,12 +1003,20 @@ class MainWindow(QMainWindow):
             self.tm.clear_all()
             for k, v in TerrainMap.from_dict(data.get("terrain", {}))._data.items():
                 self.tm.set(k, v)
+            # Restore curses
+            self.cm.from_dict(data.get("curses", {}))
+            # Restore fog
+            fog_data = data.get("fog_revealed", [])
+            self.canvas._fog_revealed = set(fog_data)
+            self.canvas.fog_enabled = data.get("fog_enabled", bool(fog_data))
+            self.fog_check.setChecked(self.canvas.fog_enabled)
             self.day = data.get("day", 1)
             self.current_weather = data.get("weather", "")
             idx = self.weather_combo.findData(self.current_weather)
             self.weather_combo.setCurrentIndex(max(0, idx))
             self.canvas.clear_moved()
             self._bonus_move_entity = None
+            self._advance_day_after_bonus_move = False
             self.canvas.set_selected(None)
             self.canvas.set_highlighted_location(-1)
             self._refresh_list()
@@ -900,15 +1138,19 @@ class MainWindow(QMainWindow):
             return
 
         if is_bonus:
-            # Player used the bonus move — turn fully done
+            was_bonus_advance = self._advance_day_after_bonus_move
             self._bonus_move_entity = None
+            self._advance_day_after_bonus_move = False
             self.canvas.mark_moved(entity.id)
             self.canvas.set_selected(entity)
             self.status_bar.showMessage(
                 f"'{entity.name}' used bonus move → node {target_node}.  "
                 f"[{self._progress_str()}]"
             )
-            self._check_day_end()
+            if was_bonus_advance:
+                self._advance_day()
+            else:
+                self._check_day_end()
         else:
             if random.random() < 0.25:
                 # Lucky extra move
@@ -1134,58 +1376,92 @@ class MainWindow(QMainWindow):
         e = self.canvas._selected_entity
         if e is None or e.id in self.canvas._moved_ids:
             return
+        was_bonus_advance = self._advance_day_after_bonus_move
         self._bonus_move_entity = None
+        self._advance_day_after_bonus_move = False
         self.canvas.mark_moved(e.id)
-        self.canvas.set_selected(e)          # keep selected, targets cleared
+        self.canvas.set_selected(e)
         self.status_bar.showMessage(
             f"'{e.name}' is waiting.  [{self._progress_str()}]"
         )
         self._refresh_list()
         self._update_day_ui()
-        self._check_day_end()
+        if was_bonus_advance:
+            self._advance_day()
+        else:
+            self._check_day_end()
 
     def _check_day_end(self):
         entities = self.em.toplevel
         if not entities:
             return
         if all(e.id in self.canvas._moved_ids for e in entities):
-            self._request_day_advance()
+            self._show_advance_day_dialog(all_acted=True)
 
-    def _request_day_advance(self):
-        """All entities have acted — ask the GM whether to advance the day."""
-        self.status_bar.showMessage(
-            f"All entities have acted on Day {self.day}.  "
-            f"Advance to Day {self.day + 1}?"
-        )
-        ans = QMessageBox.question(
-            self,
-            "Advance Day?",
-            f"All entities have acted.\n\nAdvance to Day {self.day + 1}?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
-        )
-        if ans == QMessageBox.StandardButton.Yes:
-            self._advance_day()
+    def _show_advance_day_dialog(self, all_acted: bool):
+        """Yes = advance, No = grant one entity an extra move, Cancel = stay."""
+        if all_acted:
+            body = f"All entities have acted.\n\nAdvance to Day {self.day + 1}?"
         else:
-            self.status_bar.showMessage(
-                f"Day {self.day} held — click Advance Day when ready."
-            )
+            body = f"Not all entities have acted.\n\nAdvance to Day {self.day + 1}?"
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Advance Day?")
+        msg.setText(body)
+        yes_btn    = msg.addButton("Yes — Advance Day",     QMessageBox.ButtonRole.YesRole)
+        no_btn     = msg.addButton("No — Grant Extra Move", QMessageBox.ButtonRole.NoRole)
+        cancel_btn = msg.addButton("Cancel",                QMessageBox.ButtonRole.RejectRole)
+        msg.setDefaultButton(yes_btn)
+        msg.exec()
+        clicked = msg.clickedButton()
+        if clicked == yes_btn:
+            self._advance_day()
+        elif clicked == no_btn:
+            self._grant_extra_move_before_advance()
+        # else Cancel — stay on current day
 
     def _advance_day(self):
-        """Increment day and reset all turn state."""
         self.day += 1
         self.canvas.clear_moved()
         self._bonus_move_entity = None
+        self._advance_day_after_bonus_move = False
         self.canvas.set_selected(None)
         self._refresh_list()
         self._update_day_ui()
-        self.status_bar.showMessage(
-            f"All entities have acted — Day {self.day} has begun!"
-        )
+        self.status_bar.showMessage(f"Day {self.day} has begun!")
 
     def _advance_day_manual(self):
-        """Manual 'Advance Day' button — advances regardless of who has acted."""
-        self._advance_day()
+        """Manual 'Advance Day' button."""
+        all_acted = bool(self.em.toplevel) and all(
+            e.id in self.canvas._moved_ids for e in self.em.toplevel
+        )
+        self._show_advance_day_dialog(all_acted=all_acted)
+
+    def _grant_extra_move_before_advance(self):
+        """Let the GM pick one acted entity to get a bonus move before advancing."""
+        acted = [e for e in self.em.toplevel if e.id in self.canvas._moved_ids]
+        if not acted:
+            self.status_bar.showMessage("No entity has acted yet — nothing to grant.")
+            return
+        names = [e.name for e in acted]
+        name, ok = QInputDialog.getItem(
+            self, "Grant Extra Move",
+            "Which entity gets an extra move before the day advances?",
+            names, editable=False,
+        )
+        if not ok:
+            return
+        entity = next((e for e in acted if e.name == name), None)
+        if entity is None:
+            return
+        self.canvas._moved_ids.discard(entity.id)
+        self._bonus_move_entity = entity.id
+        self._advance_day_after_bonus_move = True
+        self.canvas.set_selected(entity)
+        self._refresh_list()
+        self._update_day_ui()
+        self.status_bar.showMessage(
+            f"'{entity.name}' gets one extra move. Move or press W to advance the day."
+        )
 
     # ------------------------------------------------------------------
     # Bot auto-movement

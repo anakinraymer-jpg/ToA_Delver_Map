@@ -6,6 +6,7 @@ from PyQt6.QtCore import Qt, QPointF, QRectF, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QFont, QPen, QPixmap, QPolygonF
 from PyQt6.QtWidgets import QGraphicsScene, QGraphicsView
 
+from curse import CurseMap, LESSER_CURSE
 from entities import Entity, EntityManager
 from hex_grid import HexGrid
 from locations import LocationManager
@@ -14,27 +15,66 @@ from terrain import TERRAIN_ABBR, TERRAIN_ALPHA, TERRAIN_COLORS, TerrainMap
 # Terrain types that require the Seafaring flag to enter
 WATER_TERRAINS: frozenset[str] = frozenset({"Ocean", "Rivers"})
 
+# Curse hex fill colours (semi-transparent)
+_LESSER_FILL  = QColor(80, 200, 120, 110)
+_GREATER_FILL = QColor(0,  110,   0, 140)
+_LESSER_SKULL = QColor(50, 150, 80)
+_GREATER_SKULL = QColor(0, 70, 0)
+
 
 class HexMapCanvas(QGraphicsView):
-    entity_selected = pyqtSignal(object)        # Entity | None
-    move_requested = pyqtSignal(object, int)    # entity, target_node
-    origin_clicked = pyqtSignal(float, float)   # x, y scene coords
-    right_clicked_entity = pyqtSignal(object)   # Entity (for edit dialog)
+    entity_selected             = pyqtSignal(object)        # Entity | None
+    move_requested              = pyqtSignal(object, int)   # entity, target_node
+    origin_clicked              = pyqtSignal(float, float)  # x, y scene coords
+    right_clicked_entity        = pyqtSignal(object)        # Entity (for edit dialog)
+    hex_toggled_in_reveal_mode  = pyqtSignal(int, bool)     # node, is_now_revealed
+    hex_curse_toggled           = pyqtSignal(int, bool, str)  # node, is_set, level
 
-    def __init__(self, grid: HexGrid, em: EntityManager, lm: LocationManager, tm: TerrainMap):
+    def __init__(
+        self,
+        grid: HexGrid,
+        em: EntityManager,
+        lm: LocationManager,
+        tm: TerrainMap,
+        cm: CurseMap,
+    ):
         super().__init__()
         self.grid = grid
-        self.em = em
-        self.lm = lm
-        self.tm = tm
+        self.em   = em
+        self.lm   = lm
+        self.tm   = tm
+        self.cm   = cm
+
         self.teleport_enabled = False
         self._selected_entity: Optional[Entity] = None
         self._valid_targets: set[int] = set()
         self._bg_pixmap: Optional[QPixmap] = None
         self._pan_start = None
-        self.grid_opacity: int = 180  # 0–255
+        self.grid_opacity: int = 180          # 0–255
         self._origin_click_mode: bool = False
-        self._highlighted_location_node: int = -1  # hex to tint purple
+        self._highlighted_location_node: int = -1
+
+        # Fog of war
+        self.fog_enabled: bool = False
+        self._fog_revealed: set[int] = set()
+
+        # Reveal mode (click/drag to toggle fog on hexes)
+        self.reveal_mode: bool = False
+        self._reveal_dragging: bool = False
+        self._reveal_drag_last_node: Optional[int] = None
+        self._reveal_drag_action: bool = True   # True=revealing, False=hiding
+
+        # DM mode (show fogged areas, enable curse paint)
+        self.dm_mode: bool = False
+
+        # Curse paint mode
+        self._curse_paint_level: str = ""       # "" = off
+        self._curse_dragging: bool = False
+        self._curse_drag_erase: bool = False
+        self._curse_drag_last_node: Optional[int] = None
+
+        # Custom move range (0 = off, use neighbors; >0 = BFS N steps)
+        self._custom_move_range: int = 0
 
         self._scene = QGraphicsScene(self)
         self.setScene(self._scene)
@@ -50,14 +90,14 @@ class HexMapCanvas(QGraphicsView):
         self._corner_drag_origin: tuple[float, float] | None = None
 
         # Day-turn tracking
-        self._moved_ids: set[str] = set()   # entity IDs that have fully acted today
+        self._moved_ids: set[str] = set()
 
         # Terrain paint state
         self._terrain_paint_mode: bool = False
         self._terrain_paint_type: str = "Jungle"
-        self._terrain_dragging: bool = False       # left/right drag in progress
-        self._terrain_drag_erase: bool = False     # True = erasing, False = painting
-        self._terrain_last_node: Optional[int] = None   # avoid repainting same hex
+        self._terrain_dragging: bool = False
+        self._terrain_drag_erase: bool = False
+        self._terrain_last_node: Optional[int] = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -69,7 +109,6 @@ class HexMapCanvas(QGraphicsView):
         self.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
 
     def set_highlighted_location(self, node: int):
-        """Highlight a hex cell to indicate the selected location (-1 = none)."""
         self._highlighted_location_node = node
         self.refresh()
 
@@ -77,18 +116,18 @@ class HexMapCanvas(QGraphicsView):
         self._scene.clear()
         self._draw_background()
         self._draw_terrain()
+        self._draw_curses()
         self._draw_grid()
         self._draw_locations()
+        self._draw_fog()
         self._draw_bot_targets()
         self._draw_entities()
         self._draw_corner_handles()
 
     def mark_moved(self, entity_id: str):
-        """Mark an entity as having fully acted this day."""
         self._moved_ids.add(entity_id)
 
     def clear_moved(self):
-        """Reset all turn-tracking for a new day."""
         self._moved_ids.clear()
 
     def set_selected(self, entity: Optional[Entity]):
@@ -96,13 +135,14 @@ class HexMapCanvas(QGraphicsView):
         if entity is None:
             self._valid_targets = set()
         elif entity.id in self._moved_ids:
-            self._valid_targets = set()     # turn already spent
+            self._valid_targets = set()
         elif self.teleport_enabled:
             self._valid_targets = {c.number for c in self.grid.all_cells} - {entity.node}
+        elif self._custom_move_range > 0:
+            self._valid_targets = self._bfs_range(entity.node, self._custom_move_range)
         else:
             self._valid_targets = set(self.grid.neighbor_numbers(entity.node))
 
-        # Remove water tiles for non-seafaring entities
         if entity is not None and not getattr(entity, "seafaring", False):
             self._valid_targets = {
                 n for n in self._valid_targets
@@ -123,7 +163,7 @@ class HexMapCanvas(QGraphicsView):
 
     def set_origin_click_mode(self, enabled: bool):
         self._origin_click_mode = enabled
-        if not self._terrain_paint_mode:
+        if not self._terrain_paint_mode and not self.reveal_mode:
             self.setCursor(
                 Qt.CursorShape.CrossCursor if enabled else Qt.CursorShape.ArrowCursor
             )
@@ -134,6 +174,49 @@ class HexMapCanvas(QGraphicsView):
         self.setCursor(
             Qt.CursorShape.CrossCursor if enabled else Qt.CursorShape.ArrowCursor
         )
+
+    def set_reveal_mode(self, enabled: bool):
+        self.reveal_mode = enabled
+        if enabled:
+            self.setCursor(Qt.CursorShape.CrossCursor)
+        elif not self._terrain_paint_mode:
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+
+    def set_curse_paint(self, level: str):
+        """Set curse paint level. Empty string disables curse paint."""
+        self._curse_paint_level = level
+        if level:
+            self.setCursor(Qt.CursorShape.CrossCursor)
+        elif not self._terrain_paint_mode and not self.reveal_mode:
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+
+    def set_custom_move_range(self, n: int):
+        self._custom_move_range = n
+        if self._selected_entity:
+            self.set_selected(self._selected_entity)
+
+    def center_on_node(self, node: int):
+        pos = self.grid.pixel_of(node)
+        if pos:
+            self.centerOn(pos[0], pos[1])
+
+    # ------------------------------------------------------------------
+    # BFS range
+    # ------------------------------------------------------------------
+
+    def _bfs_range(self, start: int, steps: int) -> set[int]:
+        """Return all nodes reachable from start in up to N BFS steps."""
+        visited: set[int] = {start}
+        frontier: set[int] = {start}
+        for _ in range(steps):
+            next_frontier: set[int] = set()
+            for node in frontier:
+                for nb in self.grid.neighbor_numbers(node):
+                    if nb not in visited:
+                        visited.add(nb)
+                        next_frontier.add(nb)
+            frontier = next_frontier
+        return visited - {start}
 
     # ------------------------------------------------------------------
     # Drawing
@@ -166,9 +249,9 @@ class HexMapCanvas(QGraphicsView):
             poly = QPolygonF([QPointF(x, y) for x, y in corners])
             cx, cy = self.grid.hex_to_pixel(cell.q, cell.r)
 
-            is_sel = cell.number == selected_node
+            is_sel    = cell.number == selected_node
             is_target = cell.number in self._valid_targets
-            is_loc = cell.number == self._highlighted_location_node
+            is_loc    = cell.number == self._highlighted_location_node
 
             if is_sel:
                 pen, brush = pen_sel_node, brush_sel_node
@@ -192,7 +275,7 @@ class HexMapCanvas(QGraphicsView):
         font.setPointSize(max(7, int(self.grid.size * 0.28)))
         font.setBold(True)
 
-        for entity in self.em.toplevel:   # skip group members
+        for entity in self.em.toplevel:
             pos = self.grid.pixel_of(entity.node)
             if pos is None:
                 continue
@@ -201,12 +284,10 @@ class HexMapCanvas(QGraphicsView):
             is_sel   = self._selected_entity and entity.id == self._selected_entity.id
             is_moved = entity.id in self._moved_ids
 
-            # Fill colour — dim when turn is spent
             fill_color = QColor(entity.color)
             if is_moved:
                 fill_color.setAlpha(110)
 
-            # Border colour / style
             if is_sel:
                 pen_color, pen_w = QColor("yellow"), 3
             elif is_moved:
@@ -234,7 +315,6 @@ class HexMapCanvas(QGraphicsView):
             lbl.setPos(cx - br.width() / 2, cy - br.height() / 2)
             lbl.setZValue(6)
 
-            # Small "✓" overlay for moved entities
             if is_moved:
                 chk_font = QFont()
                 chk_font.setPointSize(max(5, int(self.grid.size * 0.18)))
@@ -259,7 +339,6 @@ class HexMapCanvas(QGraphicsView):
             if t is None:
                 continue
 
-            # Filled polygon
             corners = self.grid.corners(cell.q, cell.r)
             poly = QPolygonF([QPointF(x, y) for x, y in corners])
             fill = QColor(TERRAIN_COLORS[t])
@@ -268,7 +347,6 @@ class HexMapCanvas(QGraphicsView):
                 poly, QPen(Qt.PenStyle.NoPen), QBrush(fill)
             ).setZValue(0.5)
 
-            # Subtle abbreviation at the top of the hex
             cx, cy = self.grid.hex_to_pixel(cell.q, cell.r)
             lbl = self._scene.addText(TERRAIN_ABBR[t], abbr_font)
             lbl_color = QColor(255, 255, 255, 130)
@@ -277,6 +355,51 @@ class HexMapCanvas(QGraphicsView):
             lbl.setPos(cx - br.width() / 2,
                        cy - self.grid.size * 0.48)
             lbl.setZValue(0.8)
+
+    # ------------------------------------------------------------------
+    # Curse fills  (z=0.6 fill, z=1.5 skull icon)
+    # ------------------------------------------------------------------
+
+    def _draw_curses(self):
+        skull_font = QFont()
+        skull_font.setPointSize(max(6, int(self.grid.size * 0.20)))
+
+        for cell in self.grid.all_cells:
+            level = self.cm.get(cell.number)
+            if level is None:
+                continue
+
+            corners = self.grid.corners(cell.q, cell.r)
+            poly = QPolygonF([QPointF(x, y) for x, y in corners])
+            fill = _LESSER_FILL if level == LESSER_CURSE else _GREATER_FILL
+            self._scene.addPolygon(
+                poly, QPen(Qt.PenStyle.NoPen), QBrush(fill)
+            ).setZValue(0.6)
+
+            cx, cy = self.grid.hex_to_pixel(cell.q, cell.r)
+            skull = self._scene.addText("☠", skull_font)
+            skull.setDefaultTextColor(_LESSER_SKULL if level == LESSER_CURSE else _GREATER_SKULL)
+            br = skull.boundingRect()
+            skull.setPos(cx - br.width() / 2, cy - br.height() / 2)
+            skull.setZValue(1.5)
+
+    # ------------------------------------------------------------------
+    # Fog overlay  (z=4.9 — covers terrain/locations, reveals entities)
+    # ------------------------------------------------------------------
+
+    def _draw_fog(self):
+        if not self.fog_enabled:
+            return
+        fog_alpha = 60 if self.dm_mode else 190
+        fog_color = QColor(0, 0, 0, fog_alpha)
+        pen  = QPen(Qt.PenStyle.NoPen)
+        brush = QBrush(fog_color)
+        for cell in self.grid.all_cells:
+            if cell.number in self._fog_revealed:
+                continue
+            corners = self.grid.corners(cell.q, cell.r)
+            poly = QPolygonF([QPointF(x, y) for x, y in corners])
+            self._scene.addPolygon(poly, pen, brush).setZValue(4.9)
 
     # ------------------------------------------------------------------
     # Location markers  (z=3 diamonds, z=4 name labels)
@@ -292,37 +415,29 @@ class HexMapCanvas(QGraphicsView):
             if pos is None:
                 continue
             cx, cy = pos
-            h = max(6.0, self.grid.size * 0.18)   # diamond half-size
+            h = max(6.0, self.grid.size * 0.18)
 
-            # Filled diamond (map-pin style)
             diamond = QPolygonF([
-                QPointF(cx,     cy - h),   # top
-                QPointF(cx + h, cy),       # right
-                QPointF(cx,     cy + h),   # bottom
-                QPointF(cx - h, cy),       # left
+                QPointF(cx,     cy - h),
+                QPointF(cx + h, cy),
+                QPointF(cx,     cy + h),
+                QPointF(cx - h, cy),
             ])
             pen   = QPen(QColor("white"), 1.2)
             brush = QBrush(QColor(loc.color))
             self._scene.addPolygon(diamond, pen, brush).setZValue(3)
 
-            # Name label below the diamond
             lbl = self._scene.addText(loc.name, name_font)
             lbl.setDefaultTextColor(QColor(loc.color))
             br = lbl.boundingRect()
-            # Centre horizontally; sit just below the diamond's bottom tip
             lbl.setPos(cx - br.width() / 2, cy + h + 2)
             lbl.setZValue(4)
 
     # ------------------------------------------------------------------
-    # Bot target indicators  (z=4.5 — above locations, below entities)
+    # Bot target indicators  (z=4.5 / 4.6)
     # ------------------------------------------------------------------
 
     def _draw_bot_targets(self):
-        """
-        For every bot with a bot_target draw:
-          • a dashed line from the bot's hex to the target hex
-          • a small ring + dot at the target hex
-        """
         for entity in self.em.toplevel:
             if not entity.is_bot:
                 continue
@@ -340,12 +455,10 @@ class HexMapCanvas(QGraphicsView):
             color = QColor(entity.color)
             color.setAlpha(160)
 
-            # Dashed line
             line_pen = QPen(color, 1.5, Qt.PenStyle.DashLine)
             line = self._scene.addLine(sx, sy, tx, ty, line_pen)
             line.setZValue(4.5)
 
-            # Ring at target
             ring_r = self.grid.size * 0.22
             ring_pen = QPen(color, 2, Qt.PenStyle.SolidLine)
             ring = self._scene.addEllipse(
@@ -355,13 +468,11 @@ class HexMapCanvas(QGraphicsView):
             )
             ring.setZValue(4.5)
 
-            # Dot at target
             dot_r = ring_r * 0.35
-            dot_brush = QBrush(color)
             dot = self._scene.addEllipse(
                 QRectF(tx - dot_r, ty - dot_r, 2 * dot_r, 2 * dot_r),
                 QPen(Qt.PenStyle.NoPen),
-                dot_brush,
+                QBrush(color),
             )
             dot.setZValue(4.6)
 
@@ -369,14 +480,13 @@ class HexMapCanvas(QGraphicsView):
     # Corner-warp handles
     # ------------------------------------------------------------------
 
-    # Corner colours: TL=cyan, TR=magenta, BL=yellow, BR=lime
     _CORNER_COLORS = ["#00e5ff", "#ff40ff", "#ffff00", "#00ff80"]
     _CORNER_LABELS = ["TL", "TR", "BL", "BR"]
-    _HANDLE_R = 10          # visual radius in scene pixels
-    _HIT_RADIUS = 16        # click-detection radius
+    _HANDLE_R = 10
+    _HIT_RADIUS = 16
 
     def _draw_corner_handles(self):
-        corners = self.grid.get_warp_corners()   # (tl, tr, bl, br)
+        corners = self.grid.get_warp_corners()
         font = QFont()
         font.setPointSize(7)
         font.setBold(True)
@@ -396,7 +506,6 @@ class HexMapCanvas(QGraphicsView):
             lbl.setZValue(11)
 
     def _corner_hit(self, sx: float, sy: float) -> int:
-        """Return 0–3 for the first corner handle within hit radius, else -1."""
         corners = self.grid.get_warp_corners()
         for i, (cx, cy) in enumerate(corners):
             if (sx - cx) ** 2 + (sy - cy) ** 2 <= self._HIT_RADIUS ** 2:
@@ -408,7 +517,6 @@ class HexMapCanvas(QGraphicsView):
     # ------------------------------------------------------------------
 
     def _terrain_paint_at(self, sp, erase: bool):
-        """Apply or erase terrain at the scene point sp."""
         coord = self.grid.pixel_to_nearest(sp.x(), sp.y())
         if coord is None:
             return None
@@ -422,16 +530,9 @@ class HexMapCanvas(QGraphicsView):
         return cell.number
 
     def _flood_fill_terrain(self, start_node: int, new_terrain: Optional[str]):
-        """
-        BFS flood fill starting at start_node.
-
-        Spreads to all contiguous hexes that share the *same* starting terrain
-        (including None = unpainted) and paints them with new_terrain.
-        If new_terrain is None the matching region is cleared instead.
-        """
         initial = self.tm.get(start_node)
         if initial == new_terrain:
-            return                          # already the right colour — nothing to do
+            return
 
         visited: set[int] = {start_node}
         queue: list[int] = [start_node]
@@ -459,7 +560,51 @@ class HexMapCanvas(QGraphicsView):
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
             return
 
-        # Terrain paint mode — intercepts left and right clicks
+        # ── Reveal Mode: left-click toggles fog on a hex ──────────────
+        if self.reveal_mode and event.button() == Qt.MouseButton.LeftButton:
+            sp = self.mapToScene(event.pos())
+            coord = self.grid.pixel_to_nearest(sp.x(), sp.y())
+            if coord:
+                cell = self.grid.cell(*coord)
+                if cell:
+                    node = cell.number
+                    if node in self._fog_revealed:
+                        self._fog_revealed.discard(node)
+                        self._reveal_drag_action = False
+                        is_now = False
+                    else:
+                        self._fog_revealed.add(node)
+                        self._reveal_drag_action = True
+                        is_now = True
+                    self._reveal_dragging = True
+                    self._reveal_drag_last_node = node
+                    self.hex_toggled_in_reveal_mode.emit(node, is_now)
+                    self.refresh()
+            return
+
+        # ── Curse Paint mode ──────────────────────────────────────────
+        if self._curse_paint_level and event.button() in (
+            Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton
+        ):
+            erase = event.button() == Qt.MouseButton.RightButton
+            sp = self.mapToScene(event.pos())
+            coord = self.grid.pixel_to_nearest(sp.x(), sp.y())
+            if coord:
+                cell = self.grid.cell(*coord)
+                if cell:
+                    node = cell.number
+                    if erase:
+                        self.cm.clear(node)
+                    else:
+                        self.cm.set(node, self._curse_paint_level)
+                    self._curse_dragging = True
+                    self._curse_drag_erase = erase
+                    self._curse_drag_last_node = node
+                    self.hex_curse_toggled.emit(node, not erase, self._curse_paint_level)
+                    self.refresh()
+            return
+
+        # ── Terrain paint mode ────────────────────────────────────────
         if self._terrain_paint_mode and event.button() in (
             Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton
         ):
@@ -468,7 +613,6 @@ class HexMapCanvas(QGraphicsView):
             shift = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
 
             if shift:
-                # Shift+click → flood fill / flood erase
                 coord = self.grid.pixel_to_nearest(sp.x(), sp.y())
                 if coord:
                     cell = self.grid.cell(*coord)
@@ -476,7 +620,6 @@ class HexMapCanvas(QGraphicsView):
                         fill = None if erase else self._terrain_paint_type
                         self._flood_fill_terrain(cell.number, fill)
             else:
-                # Normal click → single hex + start drag
                 node = self._terrain_paint_at(sp, erase)
                 if node is not None:
                     self._terrain_dragging = True
@@ -485,7 +628,7 @@ class HexMapCanvas(QGraphicsView):
                     self.refresh()
             return
 
-        # Origin-click calibration mode: any left-click sets the origin
+        # ── Origin-click calibration mode ────────────────────────────
         if self._origin_click_mode and event.button() == Qt.MouseButton.LeftButton:
             sp = self.mapToScene(event.pos())
             self.set_origin_click_mode(False)
@@ -538,6 +681,44 @@ class HexMapCanvas(QGraphicsView):
                     self.set_selected(here[0])
 
     def mouseMoveEvent(self, event):
+        # Reveal mode drag
+        if self._reveal_dragging:
+            sp = self.mapToScene(event.pos())
+            coord = self.grid.pixel_to_nearest(sp.x(), sp.y())
+            if coord:
+                cell = self.grid.cell(*coord)
+                if cell and cell.number != self._reveal_drag_last_node:
+                    node = cell.number
+                    self._reveal_drag_last_node = node
+                    if self._reveal_drag_action:
+                        if node not in self._fog_revealed:
+                            self._fog_revealed.add(node)
+                            self.hex_toggled_in_reveal_mode.emit(node, True)
+                            self.refresh()
+                    else:
+                        if node in self._fog_revealed:
+                            self._fog_revealed.discard(node)
+                            self.hex_toggled_in_reveal_mode.emit(node, False)
+                            self.refresh()
+            return
+
+        # Curse paint drag
+        if self._curse_dragging:
+            sp = self.mapToScene(event.pos())
+            coord = self.grid.pixel_to_nearest(sp.x(), sp.y())
+            if coord:
+                cell = self.grid.cell(*coord)
+                if cell and cell.number != self._curse_drag_last_node:
+                    node = cell.number
+                    self._curse_drag_last_node = node
+                    if self._curse_drag_erase:
+                        self.cm.clear(node)
+                    else:
+                        self.cm.set(node, self._curse_paint_level)
+                    self.hex_curse_toggled.emit(node, not self._curse_drag_erase, self._curse_paint_level)
+                    self.refresh()
+            return
+
         # Terrain drag-paint
         if self._terrain_dragging:
             sp = self.mapToScene(event.pos())
@@ -577,6 +758,18 @@ class HexMapCanvas(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        if self._reveal_dragging and event.button() == Qt.MouseButton.LeftButton:
+            self._reveal_dragging = False
+            self._reveal_drag_last_node = None
+            return
+
+        if self._curse_dragging and event.button() in (
+            Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton
+        ):
+            self._curse_dragging = False
+            self._curse_drag_last_node = None
+            return
+
         if self._terrain_dragging and event.button() in (
             Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton
         ):
