@@ -103,6 +103,12 @@ class HexMapCanvas(QGraphicsView):
         self._terrain_drag_erase: bool = False
         self._terrain_last_node: Optional[int] = None
 
+        # Hex ruler state
+        self.ruler_mode: bool = False
+        self._ruler_start: Optional[int] = None
+        self._ruler_end: Optional[int] = None
+        self._ruler_hover: Optional[int] = None
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -128,6 +134,7 @@ class HexMapCanvas(QGraphicsView):
         self._draw_bot_targets()
         self._draw_entities()
         self._draw_corner_handles()
+        self._draw_ruler()
 
     def mark_moved(self, entity_id: str):
         self._moved_ids.add(entity_id)
@@ -548,6 +555,85 @@ class HexMapCanvas(QGraphicsView):
             lbl.setPos(cx - br.width() / 2, cy - br.height() / 2)
             lbl.setZValue(11)
 
+    # ------------------------------------------------------------------
+    # Hex ruler  (z=12–12.2 — above everything)
+    # ------------------------------------------------------------------
+
+    def _draw_ruler(self):
+        if not self.ruler_mode or self._ruler_start is None:
+            return
+
+        start_pos = self.grid.pixel_of(self._ruler_start)
+        if start_pos is None:
+            return
+        sx, sy = start_pos
+
+        # Highlight start hex
+        start_cell = self.grid.cell_by_number(self._ruler_start)
+        if start_cell:
+            corners = self.grid.corners(start_cell.q, start_cell.r)
+            poly = QPolygonF([QPointF(x, y) for x, y in corners])
+            self._scene.addPolygon(
+                poly,
+                QPen(QColor(255, 220, 0, 220), 2),
+                QBrush(QColor(255, 220, 0, 40)),
+            ).setZValue(12)
+
+        end_node = self._ruler_end if self._ruler_end is not None else self._ruler_hover
+        if end_node is None or end_node == self._ruler_start:
+            return
+
+        end_pos = self.grid.pixel_of(end_node)
+        if end_pos is None:
+            return
+        ex, ey = end_pos
+
+        # Highlight end hex
+        end_cell = self.grid.cell_by_number(end_node)
+        if end_cell:
+            corners = self.grid.corners(end_cell.q, end_cell.r)
+            poly = QPolygonF([QPointF(x, y) for x, y in corners])
+            self._scene.addPolygon(
+                poly,
+                QPen(QColor(255, 220, 0, 220), 2),
+                QBrush(QColor(255, 220, 0, 40)),
+            ).setZValue(12)
+
+        # Line between centers
+        self._scene.addLine(
+            sx, sy, ex, ey,
+            QPen(QColor(255, 220, 0, 200), 2, Qt.PenStyle.DashLine),
+        ).setZValue(12)
+
+        # Endpoint dots
+        dot_r = self.grid.size * 0.12
+        for dx, dy in ((sx, sy), (ex, ey)):
+            self._scene.addEllipse(
+                QRectF(dx - dot_r, dy - dot_r, 2 * dot_r, 2 * dot_r),
+                QPen(Qt.PenStyle.NoPen),
+                QBrush(QColor(255, 220, 0, 220)),
+            ).setZValue(12.1)
+
+        # Distance label at midpoint
+        dist = self.grid.hex_distance(self._ruler_start, end_node)
+        mx, my = (sx + ex) / 2, (sy + ey) / 2
+        label = str(dist)
+        font = QFont()
+        font.setPointSize(max(9, int(self.grid.size * 0.26)))
+        font.setBold(True)
+
+        shadow = self._scene.addText(label, font)
+        shadow.setDefaultTextColor(QColor(0, 0, 0, 200))
+        sbr = shadow.boundingRect()
+        shadow.setPos(mx - sbr.width() / 2 + 1, my - sbr.height() / 2 + 1)
+        shadow.setZValue(12.1)
+
+        lbl = self._scene.addText(label, font)
+        lbl.setDefaultTextColor(QColor(255, 240, 80))
+        br = lbl.boundingRect()
+        lbl.setPos(mx - br.width() / 2, my - br.height() / 2)
+        lbl.setZValue(12.2)
+
     def _corner_hit(self, sx: float, sy: float) -> int:
         corners = self.grid.get_warp_corners()
         for i, (cx, cy) in enumerate(corners):
@@ -601,6 +687,23 @@ class HexMapCanvas(QGraphicsView):
         if event.button() == Qt.MouseButton.MiddleButton:
             self._pan_start = event.pos()
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            return
+
+        # ── Ruler Mode: left-click sets start / pins end ──────────────
+        if self.ruler_mode and event.button() == Qt.MouseButton.LeftButton:
+            sp = self.mapToScene(event.pos())
+            coord = self.grid.pixel_to_nearest(sp.x(), sp.y())
+            if coord:
+                cell = self.grid.cell(*coord)
+                if cell:
+                    node = cell.number
+                    if self._ruler_start is None or self._ruler_end is not None:
+                        self._ruler_start = node
+                        self._ruler_end = None
+                        self._ruler_hover = None
+                    else:
+                        self._ruler_end = node
+                    self.refresh()
             return
 
         # ── Reveal Mode: left-click toggles fog on a hex ──────────────
@@ -800,6 +903,17 @@ class HexMapCanvas(QGraphicsView):
             self.verticalScrollBar().setValue(
                 self.verticalScrollBar().value() - delta.y()
             )
+
+        # ── Ruler live hover ───────────────────────────────────────────
+        if self.ruler_mode and self._ruler_start is not None and self._ruler_end is None:
+            sp = self.mapToScene(event.pos())
+            coord = self.grid.pixel_to_nearest(sp.x(), sp.y())
+            if coord:
+                cell = self.grid.cell(*coord)
+                if cell and cell.number != self._ruler_hover:
+                    self._ruler_hover = cell.number
+                    self.refresh()
+
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):

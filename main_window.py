@@ -336,6 +336,15 @@ class MainWindow(QMainWindow):
         )
         self.reveal_check.stateChanged.connect(self._toggle_reveal_mode)
 
+        # ── Ruler toggle ──────────────────────────────────────────────
+        self.ruler_check = QCheckBox("Ruler  [R]")
+        self.ruler_check.setToolTip(
+            "Click two hexes to measure the straight-line distance between them.\n"
+            "Click the first hex to set the start; hover to preview; click again to pin."
+        )
+        self.ruler_check.setShortcut("R")
+        self.ruler_check.stateChanged.connect(self._toggle_ruler_mode)
+
         # ── Custom Move Range toggle ───────────────────────────────────
         self.custom_move_check = QCheckBox("Custom Move Range")
         self.custom_move_check.setToolTip(
@@ -378,7 +387,7 @@ class MainWindow(QMainWindow):
             "<b>Pan/Zoom:</b> middle-drag · scroll wheel<br>"
             "<b>Paint:</b> click/drag · Shift+click to flood-fill<br>"
             "Right-click to erase · Shift+right to flood-erase<br>"
-            "<b>Keys:</b> W = Wait · P = Paint · Del = Clear terrain hex<br>"
+            "<b>Keys:</b> W = Wait · P = Paint · R = Ruler · Del = Clear terrain hex<br>"
             "<b>DM Mode:</b> Ctrl+D then M"
             "</small>"
         )
@@ -412,6 +421,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.teleport_check)
         layout.addWidget(self.fog_check)
         layout.addWidget(self.reveal_check)
+        layout.addWidget(self.ruler_check)
         layout.addWidget(self.custom_move_check)
         layout.addWidget(self.game_check)
         layout.addWidget(opacity_group)
@@ -736,6 +746,20 @@ class MainWindow(QMainWindow):
         else:
             self.canvas.set_custom_move_range(0)
             self.status_bar.showMessage("Custom Move Range: OFF.")
+
+    def _toggle_ruler_mode(self, state):
+        enabled = bool(state)
+        self.canvas.ruler_mode = enabled
+        if enabled:
+            self.canvas.setCursor(Qt.CursorShape.CrossCursor)
+            self.status_bar.showMessage("Ruler ON — click a hex to start, hover to preview, click again to pin.")
+        else:
+            self.canvas._ruler_start = None
+            self.canvas._ruler_end = None
+            self.canvas._ruler_hover = None
+            self.canvas.setCursor(Qt.CursorShape.ArrowCursor)
+            self.canvas.refresh()
+            self.status_bar.showMessage("Ruler OFF.")
 
     def _toggle_game_mode(self, state):
         self.canvas.game_mode = bool(state)

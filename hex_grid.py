@@ -248,6 +248,16 @@ class HexGrid:
             return False
         return c2 in self.neighbors(*c1)
 
+    def hex_distance(self, n1: int, n2: int) -> int:
+        """Cube-coordinate distance (minimum hex steps) between two nodes."""
+        c1 = self._num_to_coord.get(n1)
+        c2 = self._num_to_coord.get(n2)
+        if c1 is None or c2 is None:
+            return -1
+        dq = c2[0] - c1[0]
+        dr = c2[1] - c1[1]
+        return (abs(dq) + abs(dr) + abs(dq + dr)) // 2
+
     def cell(self, q: int, r: int) -> Optional[HexCell]:
         return self._cells.get((q, r))
 
