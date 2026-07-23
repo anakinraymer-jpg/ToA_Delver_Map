@@ -42,9 +42,9 @@ WEATHER_CONDITIONS: list[str] = [
     "Heavy Rain",
     "Tropical Storm",
     "Extremely Warm",
-    "Monsoon Shift",
     "Extremely Warm and Rainy",
     "Extremely Warm and Dry",
+    "Monsoon Shift",
 ]
 
 from PyQt6.QtWidgets import QInputDialog
@@ -607,7 +607,10 @@ class MainWindow(QMainWindow):
                 seafaring=v["seafaring"],
             )
             self.em.add(e)
+            if self.canvas.fog_enabled:
+                self.canvas._fog_revealed.add(e.node)
             self._refresh_list()
+            self._refresh_locations()
             self.canvas.refresh()
 
     def _remove_selected_entity(self):
@@ -684,6 +687,7 @@ class MainWindow(QMainWindow):
         self._dm_mode = not self._dm_mode
         self.canvas.dm_mode = self._dm_mode
         self._refresh_dm_tools()
+        self._refresh_locations()
         self.canvas.refresh()
         state = "ON" if self._dm_mode else "OFF"
         self.status_bar.showMessage(f"DM Mode {state}.")
@@ -749,6 +753,7 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage(f"No location found matching '{text}'.")
 
     def _on_hex_reveal_toggled(self, node: int, is_revealed: bool):
+        self._refresh_locations()
         action = "Revealed" if is_revealed else "Concealed"
         self.status_bar.showMessage(f"Hex {node}: {action}.")
 
@@ -879,10 +884,18 @@ class MainWindow(QMainWindow):
     def _refresh_locations(self):
         self.location_list.clear()
         for loc in self.lm.all:
+            revealed = loc.node in self.canvas._fog_revealed
+            # In non-DM mode with fog enabled, skip unrevealed locations
+            if self.canvas.fog_enabled and not self._dm_mode and not revealed:
+                continue
             type_tag = f"  [{loc.location_type}]" if loc.location_type else ""
             item = QListWidgetItem(f"{loc.name}{type_tag}  → {loc.node}")
             item.setData(Qt.ItemDataRole.UserRole, loc.id)
-            item.setForeground(QColor(loc.color))
+            color = QColor(loc.color)
+            # In DM mode, dim unrevealed locations
+            if self.canvas.fog_enabled and self._dm_mode and not revealed:
+                color.setAlpha(128)
+            item.setForeground(color)
             self.location_list.addItem(item)
 
     def _on_location_list_click(self, item: QListWidgetItem):
@@ -1005,9 +1018,11 @@ class MainWindow(QMainWindow):
                 self.tm.set(k, v)
             # Restore curses
             self.cm.from_dict(data.get("curses", {}))
-            # Restore fog
+            # Restore fog — then also reveal all entity positions
             fog_data = data.get("fog_revealed", [])
             self.canvas._fog_revealed = set(fog_data)
+            for e in self.em.all:
+                self.canvas._fog_revealed.add(e.node)
             self.canvas.fog_enabled = data.get("fog_enabled", bool(fog_data))
             self.fog_check.setChecked(self.canvas.fog_enabled)
             self.day = data.get("day", 1)
@@ -1127,6 +1142,9 @@ class MainWindow(QMainWindow):
         is_bonus = (self._bonus_move_entity == entity.id)
 
         self.em.move(entity.id, target_node)
+        if self.canvas.fog_enabled:
+            self.canvas._fog_revealed.add(target_node)
+            self._refresh_locations()
         self._check_merge_opportunity(target_node, entity)
 
         # If the entity merged into a group it's no longer top-level — clear bonus,
@@ -1437,21 +1455,16 @@ class MainWindow(QMainWindow):
         self._show_advance_day_dialog(all_acted=all_acted)
 
     def _grant_extra_move_before_advance(self):
-        """Let the GM pick one acted entity to get a bonus move before advancing."""
-        acted = [e for e in self.em.toplevel if e.id in self.canvas._moved_ids]
-        if not acted:
-            self.status_bar.showMessage("No entity has acted yet — nothing to grant.")
-            return
-        names = [e.name for e in acted]
-        name, ok = QInputDialog.getItem(
-            self, "Grant Extra Move",
-            "Which entity gets an extra move before the day advances?",
-            names, editable=False,
+        """Grant the selected entity (or first available) an extra move before advancing."""
+        # Prefer currently selected entity, then first that has acted, then any
+        sel = self.canvas._selected_entity
+        entity = (
+            sel if sel and sel.id in self.canvas._moved_ids
+            else next((e for e in self.em.toplevel if e.id in self.canvas._moved_ids), None)
+            or next(iter(self.em.toplevel), None)
         )
-        if not ok:
-            return
-        entity = next((e for e in acted if e.name == name), None)
         if entity is None:
+            self._advance_day()
             return
         self.canvas._moved_ids.discard(entity.id)
         self._bonus_move_entity = entity.id
@@ -1460,7 +1473,8 @@ class MainWindow(QMainWindow):
         self._refresh_list()
         self._update_day_ui()
         self.status_bar.showMessage(
-            f"'{entity.name}' gets one extra move. Move or press W to advance the day."
+            f"'{entity.name}' may take one extra move before Day {self.day + 1}. "
+            f"Click a hex or press W to skip."
         )
 
     # ------------------------------------------------------------------
