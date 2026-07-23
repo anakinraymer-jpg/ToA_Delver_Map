@@ -650,6 +650,7 @@ class MainWindow(QMainWindow):
                 name=v["name"], node=v["node"], color=v["color"],
                 is_group=v["is_group"], is_bot=v["is_bot"],
                 seafaring=v["seafaring"],
+                move_range=v.get("move_range", 1),
             )
             self.em.add(e)
             if self.canvas.fog_enabled:
@@ -995,6 +996,7 @@ class MainWindow(QMainWindow):
                     "is_bot": e.is_bot,
                     "members": list(e.members),
                     "seafaring": e.seafaring,
+                    "move_range": e.move_range,
                     "bot_target": e.bot_target,
                     "flavor_text": e.flavor_text,
                 }
@@ -1037,6 +1039,7 @@ class MainWindow(QMainWindow):
                     is_bot=ed.get("is_bot", False),
                     members=list(ed.get("members", [])),
                     seafaring=ed.get("seafaring", False),
+                    move_range=ed.get("move_range", 1),
                     bot_target=ed.get("bot_target"),
                     flavor_text=ed.get("flavor_text", ""),
                     id=ed["id"],
@@ -1147,6 +1150,9 @@ class MainWindow(QMainWindow):
                 traits.append("Seafaring")
             if entity.is_bot:
                 traits.append("Bot")
+            mr = getattr(entity, "move_range", 1)
+            if mr != 1:
+                traits.append(f"Move {mr}")
             trait_line = f"\n{' · '.join(traits)}" if traits else ""
 
             # Bot target line (show location name if available, else node number)
@@ -1756,6 +1762,7 @@ class MainWindow(QMainWindow):
             entity.color = v["color"]
             entity.is_bot = v["is_bot"]
             entity.seafaring = v["seafaring"]
+            entity.move_range = v.get("move_range", 1)
             entity.bot_target = v["bot_target"]
             entity.flavor_text = v["flavor_text"]
             self._refresh_list()
@@ -1778,6 +1785,7 @@ class MainWindow(QMainWindow):
                 group.name = v["name"]
                 group.is_bot = v["is_bot"]
                 group.seafaring = v["seafaring"]
+                group.move_range = v.get("move_range", 1)
                 group.bot_target = v["bot_target"]
                 group.flavor_text = v["flavor_text"]
                 # Apply member changes

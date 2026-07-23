@@ -143,7 +143,11 @@ class HexMapCanvas(QGraphicsView):
         elif self._custom_move_range > 0:
             self._valid_targets = self._bfs_range(entity.node, self._custom_move_range)
         else:
-            self._valid_targets = set(self.grid.neighbor_numbers(entity.node))
+            r = getattr(entity, "move_range", 1)
+            if r > 1:
+                self._valid_targets = self._bfs_range(entity.node, r)
+            else:
+                self._valid_targets = set(self.grid.neighbor_numbers(entity.node))
 
         if entity is not None and not getattr(entity, "seafaring", False):
             self._valid_targets = {

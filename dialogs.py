@@ -137,6 +137,11 @@ class AddEntityDialog(QDialog):
         self.node_spin = QSpinBox()
         self.node_spin.setRange(1, max_node)
 
+        self.move_range_spin = QSpinBox()
+        self.move_range_spin.setRange(1, 20)
+        self.move_range_spin.setValue(1)
+        self.move_range_spin.setToolTip("Hexes this entity may move per turn (1 = neighbours only)")
+
         self.is_group = QCheckBox("This is a group")
         self.is_bot = QCheckBox("This is a bot")
         self.seafaring = QCheckBox("Seafaring  (can enter Ocean / Rivers)")
@@ -153,6 +158,7 @@ class AddEntityDialog(QDialog):
 
         layout.addRow("Name:", self.name_edit)
         layout.addRow("Starting Node:", self.node_spin)
+        layout.addRow("Move Range:", self.move_range_spin)
         layout.addRow("Color:", color_row)
         layout.addRow("", self.is_group)
         layout.addRow("", self.is_bot)
@@ -185,6 +191,7 @@ class AddEntityDialog(QDialog):
             "is_group": self.is_group.isChecked(),
             "is_bot": self.is_bot.isChecked(),
             "seafaring": self.seafaring.isChecked(),
+            "move_range": self.move_range_spin.value(),
         }
 
 
@@ -198,8 +205,7 @@ class EditEntityDialog(QDialog):
         self.setWindowTitle(f"Edit: {entity.name}")
         self._color = entity.color
         self._lm = lm
-        # Internal storage for the resolved target node (set by combo selection)
-        self._current_target: Optional[int] = getattr(entity, "bot_target", None)
+        self._max_node = max_node
 
         root = QVBoxLayout(self)
         root.setSpacing(8)
@@ -225,7 +231,11 @@ class EditEntityDialog(QDialog):
         self.seafaring = QCheckBox("Seafaring  (can enter Ocean / Rivers)")
         self.seafaring.setChecked(getattr(entity, "seafaring", False))
 
-        # Flavor / notes text
+        self.move_range_spin = QSpinBox()
+        self.move_range_spin.setRange(1, 20)
+        self.move_range_spin.setValue(getattr(entity, "move_range", 1))
+        self.move_range_spin.setToolTip("Hexes this entity may move per turn (1 = neighbours only)")
+
         self.flavor_edit = QPlainTextEdit()
         self.flavor_edit.setPlaceholderText("Optional notes, backstory, or flavor…")
         self.flavor_edit.setFixedHeight(72)
@@ -233,6 +243,7 @@ class EditEntityDialog(QDialog):
 
         layout.addRow("Name:", self.name_edit)
         layout.addRow("Color:", color_row)
+        layout.addRow("Move Range:", self.move_range_spin)
         layout.addRow("", self.is_bot)
         layout.addRow("", self.seafaring)
         layout.addRow("Notes:", self.flavor_edit)
@@ -247,16 +258,29 @@ class EditEntityDialog(QDialog):
         if lm:
             for loc in lm.all:
                 self._target_loc_combo.addItem(f"{loc.name}  (node {loc.node})", loc.node)
+        tg_layout.addRow("Location:", self._target_loc_combo)
 
-        # Pre-select the matching location if one is already assigned
-        if lm and self._current_target is not None:
+        self._target_hex_spin = QSpinBox()
+        self._target_hex_spin.setRange(0, max_node)
+        self._target_hex_spin.setSpecialValueText("—")
+        self._target_hex_spin.setToolTip("Set a specific hex as the target (overrides location)")
+        tg_layout.addRow("Hex #:", self._target_hex_spin)
+
+        # Pre-populate: match location first, else fill hex spinbox
+        current_target: Optional[int] = getattr(entity, "bot_target", None)
+        matched_loc = False
+        if lm and current_target is not None:
             for i in range(self._target_loc_combo.count()):
-                if self._target_loc_combo.itemData(i) == self._current_target:
+                if self._target_loc_combo.itemData(i) == current_target:
                     self._target_loc_combo.setCurrentIndex(i)
+                    matched_loc = True
                     break
+        if not matched_loc and current_target is not None:
+            self._target_hex_spin.setValue(current_target)
 
+        # Mutual exclusion
         self._target_loc_combo.currentIndexChanged.connect(self._on_loc_selected)
-        tg_layout.addRow("Move toward:", self._target_loc_combo)
+        self._target_hex_spin.valueChanged.connect(self._on_hex_selected)
 
         self._target_group.setEnabled(entity.is_bot)
         self.is_bot.toggled.connect(self._target_group.setEnabled)
@@ -269,8 +293,17 @@ class EditEntityDialog(QDialog):
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
 
-    def _on_loc_selected(self, idx: int):
-        self._current_target = self._target_loc_combo.itemData(idx)
+    def _on_loc_selected(self, _idx: int):
+        if self._target_loc_combo.currentData() is not None:
+            self._target_hex_spin.blockSignals(True)
+            self._target_hex_spin.setValue(0)
+            self._target_hex_spin.blockSignals(False)
+
+    def _on_hex_selected(self, value: int):
+        if value > 0:
+            self._target_loc_combo.blockSignals(True)
+            self._target_loc_combo.setCurrentIndex(0)
+            self._target_loc_combo.blockSignals(False)
 
     def _pick_color(self):
         c = QColorDialog.getColor(QColor(self._color), self)
@@ -285,12 +318,16 @@ class EditEntityDialog(QDialog):
         self.accept()
 
     def get_values(self) -> dict:
-        bot_target: Optional[int] = self._current_target if self.is_bot.isChecked() else None
+        hex_val = self._target_hex_spin.value()
+        loc_val = self._target_loc_combo.currentData()
+        raw_target: Optional[int] = hex_val if hex_val > 0 else loc_val
+        bot_target: Optional[int] = raw_target if self.is_bot.isChecked() else None
         return {
             "name": self.name_edit.text().strip(),
             "color": self._color,
             "is_bot": self.is_bot.isChecked(),
             "seafaring": self.seafaring.isChecked(),
+            "move_range": self.move_range_spin.value(),
             "bot_target": bot_target,
             "flavor_text": self.flavor_edit.toPlainText().strip(),
         }
@@ -337,7 +374,12 @@ class EditGroupDialog(QDialog):
         self.is_bot.setChecked(group.is_bot)
         self.seafaring = QCheckBox("Seafaring  (can enter Ocean / Rivers)")
         self.seafaring.setChecked(getattr(group, "seafaring", False))
+        self.move_range_spin = QSpinBox()
+        self.move_range_spin.setRange(1, 20)
+        self.move_range_spin.setValue(getattr(group, "move_range", 1))
+        self.move_range_spin.setToolTip("Hexes this group may move per turn (1 = neighbours only)")
         hdr.addRow("Group Name:", self.name_edit)
+        hdr.addRow("Move Range:", self.move_range_spin)
         hdr.addRow("", self.is_bot)
         hdr.addRow("", self.seafaring)
         root.addLayout(hdr)
@@ -385,15 +427,28 @@ class EditGroupDialog(QDialog):
         if lm:
             for loc in lm.all:
                 self._target_loc_combo.addItem(f"{loc.name}  (node {loc.node})", loc.node)
+        tg_layout.addRow("Location:", self._target_loc_combo)
 
-        if lm and self._current_target is not None:
+        self._target_hex_spin = QSpinBox()
+        self._target_hex_spin.setRange(0, max_node)
+        self._target_hex_spin.setSpecialValueText("—")
+        self._target_hex_spin.setToolTip("Set a specific hex as the target (overrides location)")
+        tg_layout.addRow("Hex #:", self._target_hex_spin)
+
+        # Pre-populate: match location first, else fill hex spinbox
+        current_target: Optional[int] = getattr(group, "bot_target", None)
+        matched_loc = False
+        if lm and current_target is not None:
             for i in range(self._target_loc_combo.count()):
-                if self._target_loc_combo.itemData(i) == self._current_target:
+                if self._target_loc_combo.itemData(i) == current_target:
                     self._target_loc_combo.setCurrentIndex(i)
+                    matched_loc = True
                     break
+        if not matched_loc and current_target is not None:
+            self._target_hex_spin.setValue(current_target)
 
         self._target_loc_combo.currentIndexChanged.connect(self._on_loc_selected)
-        tg_layout.addRow("Move toward:", self._target_loc_combo)
+        self._target_hex_spin.valueChanged.connect(self._on_hex_selected)
 
         self._target_group.setEnabled(group.is_bot)
         self.is_bot.toggled.connect(self._target_group.setEnabled)
@@ -417,8 +472,17 @@ class EditGroupDialog(QDialog):
 
     # ------------------------------------------------------------------
 
-    def _on_loc_selected(self, idx: int):
-        self._current_target = self._target_loc_combo.itemData(idx)
+    def _on_loc_selected(self, _idx: int):
+        if self._target_loc_combo.currentData() is not None:
+            self._target_hex_spin.blockSignals(True)
+            self._target_hex_spin.setValue(0)
+            self._target_hex_spin.blockSignals(False)
+
+    def _on_hex_selected(self, value: int):
+        if value > 0:
+            self._target_loc_combo.blockSignals(True)
+            self._target_loc_combo.setCurrentIndex(0)
+            self._target_loc_combo.blockSignals(False)
 
     def _populate(self):
         self.members_list.clear()
@@ -479,12 +543,16 @@ class EditGroupDialog(QDialog):
         return self._disband
 
     def get_values(self) -> dict:
-        bot_target: Optional[int] = self._current_target if self.is_bot.isChecked() else None
+        hex_val = self._target_hex_spin.value()
+        loc_val = self._target_loc_combo.currentData()
+        raw_target: Optional[int] = hex_val if hex_val > 0 else loc_val
+        bot_target: Optional[int] = raw_target if self.is_bot.isChecked() else None
         return {
             "name": self.name_edit.text().strip() or self._group.name,
             "is_bot": self.is_bot.isChecked(),
             "seafaring": self.seafaring.isChecked(),
-            "members": list(self._members),        # desired final member list
+            "move_range": self.move_range_spin.value(),
+            "members": list(self._members),
             "bot_target": bot_target,
             "flavor_text": self.flavor_edit.toPlainText().strip(),
         }
