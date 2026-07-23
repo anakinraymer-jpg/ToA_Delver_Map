@@ -343,6 +343,13 @@ class MainWindow(QMainWindow):
         )
         self.custom_move_check.stateChanged.connect(self._toggle_custom_move)
 
+        # ── Game Mode toggle ───────────────────────────────────────────
+        self.game_check = QCheckBox("Game")
+        self.game_check.setToolTip(
+            "Hides bots and bot-target indicators — player-facing view"
+        )
+        self.game_check.stateChanged.connect(self._toggle_game_mode)
+
         # ── Grid opacity ──────────────────────────────────────────────
         opacity_group = QGroupBox("Grid Overlay")
         og = QVBoxLayout(opacity_group)
@@ -406,6 +413,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.fog_check)
         layout.addWidget(self.reveal_check)
         layout.addWidget(self.custom_move_check)
+        layout.addWidget(self.game_check)
         layout.addWidget(opacity_group)
         layout.addWidget(search_group)
         layout.addWidget(hint)
@@ -653,7 +661,7 @@ class MainWindow(QMainWindow):
                 move_range=v.get("move_range", 1),
             )
             self.em.add(e)
-            if self.canvas.fog_enabled:
+            if self.canvas.fog_enabled and self._entity_reveals_fog(e):
                 self.canvas._fog_revealed.add(e.node)
             self._refresh_list()
             self._refresh_locations()
@@ -729,6 +737,11 @@ class MainWindow(QMainWindow):
             self.canvas.set_custom_move_range(0)
             self.status_bar.showMessage("Custom Move Range: OFF.")
 
+    def _toggle_game_mode(self, state):
+        self.canvas.game_mode = bool(state)
+        self.canvas.refresh()
+        self.status_bar.showMessage("Game Mode " + ("ON — bots hidden." if state else "OFF."))
+
     def _toggle_dm_mode(self):
         self._dm_mode = not self._dm_mode
         self.canvas.dm_mode = self._dm_mode
@@ -769,14 +782,27 @@ class MainWindow(QMainWindow):
         else:
             self.status_bar.showMessage("Select an entity first to clear the curse on its hex.")
 
+    def _entity_reveals_fog(self, entity: Entity) -> bool:
+        """True if this entity should reveal the fog on its hex."""
+        if not entity.is_bot:
+            return True
+        if entity.is_group:
+            return any(
+                not (self.em.get(mid) or Entity("", 0, "")).is_bot
+                for mid in entity.members
+                if self.em.get(mid) is not None
+            )
+        return False
+
     def _reset_fog(self):
         self.canvas._fog_revealed.clear()
         for e in self.em.toplevel:
-            self.canvas._fog_revealed.add(e.node)
+            if self._entity_reveals_fog(e):
+                self.canvas._fog_revealed.add(e.node)
         self.canvas.fog_enabled = True
         self.fog_check.setChecked(True)
         self.canvas.refresh()
-        self.status_bar.showMessage("Fog reset — only entity positions are revealed.")
+        self.status_bar.showMessage("Fog reset — only non-bot entity positions are revealed.")
 
     def _do_search(self):
         text = self.search_edit.text().strip()
@@ -1065,8 +1091,9 @@ class MainWindow(QMainWindow):
         self.cm.from_dict(data.get("curses", {}))
         fog_data = data.get("fog_revealed", [])
         self.canvas._fog_revealed = set(fog_data)
-        for e in self.em.all:
-            self.canvas._fog_revealed.add(e.node)
+        for e in self.em.toplevel:
+            if self._entity_reveals_fog(e):
+                self.canvas._fog_revealed.add(e.node)
         self.canvas.fog_enabled = data.get("fog_enabled", bool(fog_data))
         self.fog_check.setChecked(self.canvas.fog_enabled)
         self.day = data.get("day", 1)
@@ -1204,7 +1231,7 @@ class MainWindow(QMainWindow):
         is_bonus = (self._bonus_move_entity == entity.id)
 
         self.em.move(entity.id, target_node)
-        if self.canvas.fog_enabled:
+        if self.canvas.fog_enabled and self._entity_reveals_fog(entity):
             self.canvas._fog_revealed.add(target_node)
             self._refresh_locations()
         self._check_merge_opportunity(target_node, entity)

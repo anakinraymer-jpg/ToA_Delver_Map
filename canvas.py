@@ -68,6 +68,9 @@ class HexMapCanvas(QGraphicsView):
         # DM mode (show fogged areas, enable curse paint)
         self.dm_mode: bool = False
 
+        # Game mode (hide bots and bot-target indicators from canvas)
+        self.game_mode: bool = False
+
         # Curse paint mode
         self._curse_paint_level: str = ""       # "" = off
         self._curse_dragging: bool = False
@@ -282,6 +285,8 @@ class HexMapCanvas(QGraphicsView):
         font.setBold(True)
 
         for entity in self.em.toplevel:
+            if self.game_mode and entity.is_bot:
+                continue
             pos = self.grid.pixel_of(entity.node)
             if pos is None:
                 continue
@@ -474,6 +479,8 @@ class HexMapCanvas(QGraphicsView):
     # ------------------------------------------------------------------
 
     def _draw_bot_targets(self):
+        if self.game_mode:
+            return
         for entity in self.em.toplevel:
             if not entity.is_bot:
                 continue
